@@ -4,7 +4,6 @@ import android.content.Context;
 import android.os.Handler;
 import android.os.Looper;
 import android.util.Log;
-import android.widget.ScrollView;
 
 import androidx.annotation.NonNull;
 
@@ -12,6 +11,7 @@ import androidx.annotation.NonNull;
 import com.example.xh_lib.utils.UUtils;
 import com.termux.BuildConfig;
 import com.termux.R;
+import com.termux.zerocore.settings.timer.TimerExecutionLog;
 import com.termux.zerocore.url.FileUrl;
 import com.termux.zerocore.utils.FileIOUtils;
 import com.topjohnwu.superuser.CallbackList;
@@ -27,8 +27,11 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStreamWriter;
 import java.io.PrintWriter;
+import java.text.SimpleDateFormat;
 import java.util.Arrays;
+import java.util.Date;
 import java.util.List;
+import java.util.Locale;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -57,7 +60,10 @@ public class LibSuManage {
     private final List<String> mConsoleList = new TimerCallbackList();
 
     private Thread mThread;
-    private ShellLogRunnable mShellLogRunnable;
+    private ShellLogWriter mShellLogWriter;
+    private final Handler mMainHandler = new Handler(Looper.getMainLooper());
+    private final ExecutorService mShellExecutor = Executors.newSingleThreadExecutor();
+    private volatile boolean mShellExecuting = false;
 
     private boolean isRun = false;
 
@@ -97,8 +103,19 @@ public class LibSuManage {
     }
 
     public void initRunnable() {
-        mShellLogRunnable = new ShellLogRunnable(new File(BASHRC_SHELL_DIR_LOG, "/" + getLogName()));
-        new Thread(mShellLogRunnable).start();
+        initRunnable(true);
+    }
+
+    public void initRunnable(boolean zeroTermux) {
+        logThreadStop();
+        TimerExecutionLog.INSTANCE.ensureLogDir();
+        mShellLogWriter = new ShellLogWriter(TimerExecutionLog.INSTANCE.logFile(zeroTermux));
+    }
+
+    public void writeRunHeader(int runNumber) {
+        if (mShellLogWriter != null) {
+            mShellLogWriter.writeRunHeader(TimerExecutionLog.INSTANCE.formatRunHeader(runNumber));
+        }
     }
 
     public boolean writerFile() {
@@ -141,14 +158,31 @@ public class LibSuManage {
     }
 
     public void shellCommandExec(String funName) {
-        try {
-            mThread = new Thread(new ShellCommandExecRunnable(funName, mConsoleList));
-            mThread.start();
-        } catch (Exception e) {
-            e.printStackTrace();
-            LogUtils.e(TAG, "shellCommandExec is error: " + e);
-        }
+        shellCommandExec(funName, null);
+    }
 
+    public void shellCommandExec(String funName, Runnable onComplete) {
+        mShellExecutor.execute(() -> {
+            mShellExecuting = true;
+            try {
+                Shell.cmd(funName).to(mConsoleList).exec();
+            } catch (Exception e) {
+                LogUtils.e(TAG, "shellCommandExec error: " + e);
+            } finally {
+                mShellExecuting = false;
+                if (onComplete != null) {
+                    mMainHandler.post(onComplete);
+                }
+            }
+        });
+    }
+
+    public boolean isShellCommandRunning() {
+        if (mShellExecuting) {
+            return true;
+        }
+        Shell shell = Shell.getCachedShell();
+        return shell != null && shell.isAlive();
     }
 
     public void stop() {
@@ -164,17 +198,14 @@ public class LibSuManage {
     }
 
     public void logThreadStop() {
-        if (mShellLogRunnable != null) {
-            mShellLogRunnable.stop();
-            mShellLogRunnable = null;
+        if (mShellLogWriter != null) {
+            mShellLogWriter.stop();
+            mShellLogWriter = null;
         }
     }
 
     public boolean isRun() {
-        if (mShellLogRunnable == null) {
-            return false;
-        }
-        return !mShellLogRunnable.isStop;
+        return mShellLogWriter != null && !mShellLogWriter.isStop();
     }
 
     public void shellCommandSubmit(String funName) {
@@ -244,64 +275,76 @@ public class LibSuManage {
                 mTimerListener.onAddElement(s);
             }
             //输出LOG到指定目录
-            if (mShellLogRunnable != null) {
-                mShellLogRunnable.writerString(s);
+            if (mShellLogWriter != null) {
+                mShellLogWriter.writerString(s);
             }
         }
     }
 
 
-    private static class ShellLogRunnable implements Runnable {
-        private  File mFilePath;
-        private  boolean isStop;
-        private  String message = "";
-        PrintWriter printWriter;
-        public ShellLogRunnable(File mFilePath) {
-            this.mFilePath = mFilePath;
+    private static class ShellLogWriter {
+        private final PrintWriter printWriter;
+        private volatile boolean isStop;
+        private final SimpleDateFormat timestampFormat =
+            new SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault());
+
+        ShellLogWriter(File filePath) {
             isStop = false;
+            PrintWriter writer = null;
             try {
-                if (mFilePath.exists()) {
-                    mFilePath.createNewFile();
+                File parent = filePath.getParentFile();
+                if (parent != null && !parent.exists()) {
+                    parent.mkdirs();
                 }
-                printWriter = new PrintWriter(new OutputStreamWriter(new FileOutputStream(mFilePath)));
-            } catch (FileNotFoundException e) {
-              e.printStackTrace();
+                if (!filePath.exists()) {
+                    filePath.createNewFile();
+                }
+                writer = new PrintWriter(new OutputStreamWriter(new FileOutputStream(filePath, true)));
             } catch (IOException e) {
-              e.printStackTrace();
+                LogUtils.e(TAG, "ShellLogWriter init error: " + e);
+            }
+            printWriter = writer;
+        }
+
+        public void writeRunHeader(String header) {
+            if (isStop || printWriter == null || header == null) {
+                return;
+            }
+            synchronized (this) {
+                if (isStop || printWriter == null) {
+                    return;
+                }
+                printWriter.println();
+                printWriter.println(header);
+                printWriter.flush();
             }
         }
-        @Override
-        public void run() {
-            while (true) {
-                if (isStop) {
-                    LogUtils.e(TAG, "ShellLogRunnable stop...");
-                    break;
-                }
-                try {
-                    Thread.sleep(500);
-                    if (mFilePath.exists()) {
-                        mFilePath.createNewFile();
-                    }
-                } catch (InterruptedException e) {
-                    e.printStackTrace();
-                } catch (IOException e) {
-                    e.printStackTrace();
-                }
 
-                if(printWriter != null && (message != null || !message.isEmpty())) {
-                    printWriter.print(message);
-                    printWriter.flush();
-                    message = "";
+        public void writerString(String msg) {
+            if (isStop || printWriter == null || msg == null) {
+                return;
+            }
+            synchronized (this) {
+                if (isStop || printWriter == null) {
+                    return;
                 }
+                printWriter.println("[" + timestampFormat.format(new Date()) + "] " + msg);
+                printWriter.flush();
             }
         }
 
         public void stop() {
             isStop = true;
+            synchronized (this) {
+                if (printWriter != null) {
+                    printWriter.flush();
+                    printWriter.close();
+                }
+            }
         }
 
-        public void writerString(String msg) {
-            message += "\n" + msg;
+        public boolean isStop() {
+            return isStop;
         }
     }
     public void setTimerListener(TimerListener timerListener) {
@@ -310,9 +353,5 @@ public class LibSuManage {
 
     public interface TimerListener {
         public void onAddElement(String msg);
-    }
-
-    private String getLogName() {
-        return "ZeroTermuxTimer_" + System.currentTimeMillis() + ".log";
     }
 }

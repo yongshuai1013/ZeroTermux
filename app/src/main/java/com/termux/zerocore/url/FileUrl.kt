@@ -1,8 +1,8 @@
 package com.termux.zerocore.url
 
-import android.os.Build
-import android.os.Environment
+import com.example.xh_lib.utils.UUtils
 import com.termux.shared.termux.TermuxConstants
+import com.termux.zerocore.utils.XinhaoStoragePath
 import java.io.File
 
 
@@ -38,45 +38,32 @@ object FileUrl {
     public val MAIN_XINHAO_SYSTEM_PATH = "$MAIN_XINHAO_PATH/system"
     public val MAIN_XINHAO_WEB_CONFIG_PATH = "$MAIN_XINHAO_PATH/web_config"
     public val MAIN_XINHAO_MODULE_PATH = "$MAIN_XINHAO_PATH/module"
+    public val MAIN_XINHAO_MENU_PATH = "$MAIN_XINHAO_PATH/menu"
     public val MAIN_XINHAO_WINDOWS_CONFIG_PATH = "$MAIN_XINHAO_PATH/windows_config"
     public val MAIN_XINHAO_TYPE_ANDROID_PATH = "$MAIN_XINHAO_PATH/sdcard_android"
     public val MAIN_XINHAO_TYPE_PATH = "$MAIN_XINHAO_PATH/sdcard_xinhao"
 
 
 
-    //主目录
-    public val zeroTermuxHome = File(Environment.getExternalStorageDirectory(), MAIN_XINHAO_PATH)
-    //恢复目录
-    public val zeroTermuxData = File(Environment.getExternalStorageDirectory(), MAIN_XINHAO_DATA_PATH)
-    //APK目录
-    public val zeroTermuxApk = File(Environment.getExternalStorageDirectory(), MAIN_XINHAO_APK_PATH)
-    //windows目录
-    public val zeroTermuxWindows = File(Environment.getExternalStorageDirectory(), MAIN_XINHAO_WINDOWS_PATH)
-    //命令目录
-    public val zeroTermuxCommand = File(Environment.getExternalStorageDirectory(), MAIN_XINHAO_COMMAND_PATH)
-    //字体目录
-    public val zeroTermuxFont = File(Environment.getExternalStorageDirectory(), MAIN_XINHAO_FONT_PATH)
-    //iso目录
-    public val zeroTermuxIso = File(Environment.getExternalStorageDirectory(), MAIN_XINHAO_ISO_PATH)
-    //mysql目录
-    public val zeroTermuxMysql = File(Environment.getExternalStorageDirectory(), MAIN_XINHAO_MYSQL_PATH)
-    //online_system 目录
-    public val zeroTermuxOnlineSystem = File(Environment.getExternalStorageDirectory(), MAIN_XINHAO_ONLINE_SYSTEM_PATH)
-    //qemu目录
-    public val zeroTermuxQemu = File(Environment.getExternalStorageDirectory(), MAIN_XINHAO_QEMU_PATH)
-    //server目录
-    public val zeroTermuxServer = File(Environment.getExternalStorageDirectory(), MAIN_XINHAO_SERVER_PATH)
-    //share目录
-    public val zeroTermuxShare = File(Environment.getExternalStorageDirectory(), MAIN_XINHAO_SHARE_PATH)
-    //system目录
-    public val zeroTermuxSystem = File(Environment.getExternalStorageDirectory(), MAIN_XINHAO_SYSTEM_PATH)
-    //web_config
-    public val zeroTermuxWebConfig = File(Environment.getExternalStorageDirectory(), MAIN_XINHAO_WEB_CONFIG_PATH)
-    //模块包目录
-    public val zeroTermuxModule = File(Environment.getExternalStorageDirectory(), MAIN_XINHAO_MODULE_PATH)
-    //windows_config目录
-    public val zeroTermuxWindowsConfig = File(Environment.getExternalStorageDirectory(), MAIN_XINHAO_WINDOWS_CONFIG_PATH)
-    public val zeroTermuxType = File(Environment.getExternalStorageDirectory(), MAIN_XINHAO_TYPE_PATH)
+    // xinhao 目录（根据用户存储设置动态解析，勿缓存为固定路径）
+    public val zeroTermuxHome: File get() = XinhaoStoragePath.getRoot(UUtils.getContext())
+    public val zeroTermuxData: File get() = XinhaoStoragePath.getDataDir(UUtils.getContext())
+    public val zeroTermuxApk: File get() = XinhaoStoragePath.getApkDir(UUtils.getContext())
+    public val zeroTermuxWindows: File get() = XinhaoStoragePath.getWindowsDir(UUtils.getContext())
+    public val zeroTermuxCommand: File get() = XinhaoStoragePath.getCommandDir(UUtils.getContext())
+    public val zeroTermuxFont: File get() = XinhaoStoragePath.getFontDir(UUtils.getContext())
+    public val zeroTermuxIso: File get() = XinhaoStoragePath.getIsoDir(UUtils.getContext())
+    public val zeroTermuxMysql: File get() = XinhaoStoragePath.getMysqlDir(UUtils.getContext())
+    public val zeroTermuxOnlineSystem: File get() = XinhaoStoragePath.getOnlineSystemDir(UUtils.getContext())
+    public val zeroTermuxQemu: File get() = XinhaoStoragePath.getQemuDir(UUtils.getContext())
+    public val zeroTermuxServer: File get() = XinhaoStoragePath.getServerDir(UUtils.getContext())
+    public val zeroTermuxShare: File get() = XinhaoStoragePath.getShareDir(UUtils.getContext())
+    public val zeroTermuxSystem: File get() = XinhaoStoragePath.getSystemDir(UUtils.getContext())
+    public val zeroTermuxWebConfig: File get() = XinhaoStoragePath.getWebConfigDir(UUtils.getContext())
+    public val zeroTermuxModule: File get() = XinhaoStoragePath.getModuleDir(UUtils.getContext())
+    public val zeroTermuxMenu: File get() = XinhaoStoragePath.getMenuDir(UUtils.getContext())
+    public val zeroTermuxWindowsConfig: File get() = XinhaoStoragePath.getWindowsConfigDir(UUtils.getContext())
+    public val zeroTermuxType: File get() = XinhaoStoragePath.getTypeMarkerDir(UUtils.getContext())
 
     //官方 sources 路径[源路径]
     public val sourcesUrl = "${TermuxConstants.TERMUX_FILES_DIR_PATH}/usr/etc/apt/sources.list"
@@ -104,17 +91,6 @@ object FileUrl {
     public val aislePreferencePathSh = "${TermuxConstants.TERMUX_FILES_DIR_PATH}/usr/bin/termux-x11-preference"
     //通道二进制文
     public val aislePathSo = "${TermuxConstants.TERMUX_FILES_DIR_PATH}/usr/lib/libXlorie.so"
-    /** 根据设备 ABI 返回 assets 中对应的 libXlorie 文件名 */
-    public fun getAisleXlorieAssetPath(): String {
-        val abi = Build.SUPPORTED_ABIS[0]
-        return when {
-            abi.startsWith("arm64")   -> "x11/libXlorie-arm64-v8a.so"
-            abi.startsWith("armeabi") -> "x11/libXlorie-armeabi-v7a.so"
-            abi.startsWith("x86_64")  -> "x11/libXlorie-x86_64.so"
-            abi.startsWith("x86")     -> "x11/libXlorie-x86.so"
-            else -> "x11/libXlorie-arm64-v8a.so" // fallback
-        }
-    }
     //定时器目录
     public val timerTermuxDir = "${mainHomeUrl}/.timerdir"
     public val timerTermuxFile = "${mainHomeUrl}/.timerdir/termux_timer.sh"

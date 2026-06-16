@@ -116,10 +116,15 @@ import com.termux.zerocore.bean.ZTUserBean;
 import com.termux.zerocore.broadcast.LocalReceiver;
 import com.termux.zerocore.code.CodeString;
 import com.termux.zerocore.config.ZTConstantConfig;
-import com.termux.zerocore.config.mainmenu.MainMenuConfig;
+import com.termux.zerocore.config.mainmenu.MainMenuPackageInfo;
+import com.termux.zerocore.config.mainmenu.MainMenuPackageManager;
+import com.termux.zerocore.config.mainmenu.ProgramMainMenuConfig;
 import com.termux.zerocore.config.mainmenu.XMLMainMenuConfig;
 import com.termux.zerocore.config.mainmenu.data.MainMenuCategoryData;
 import com.termux.zerocore.config.mainmenu.view.adapter.MainMenuAdapter;
+import com.termux.zerocore.config.mainmenu.dialog.MenuPackagePickDialog;
+import com.termux.zerocore.config.mainmenu.view.adapter.MainMenuPackageAdapter;
+import com.termux.zerocore.dialog.YesNoDialog;
 import com.termux.zerocore.config.other.ZTGitHubVersion;
 import com.termux.zerocore.config.ztcommand.config.XmlMenuConfig;
 import com.termux.zerocore.ai.deepseek.DeepSeekTransitFragment;
@@ -168,6 +173,7 @@ import androidx.viewpager.widget.ViewPager;
 import org.jetbrains.annotations.NotNull;
 
 import java.io.File;
+import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -1247,6 +1253,12 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
     private RelativeLayout session_rl;
     private RelativeLayout mGuideLayout;
     private RecyclerView mMainMenuList;
+    private RecyclerView mMenuPackageList;
+    private MainMenuPackageAdapter mMenuPackageAdapter;
+    private View menu_package_header;
+    private TextView menu_package_current;
+    private ImageView open_image_menu;
+    private boolean mMenuPackageExpanded;
     private Button mKeyBordButton;
 	private SlidingConsumer mSlidingConsumer;
     private View mLayoutMenuAll;
@@ -1257,6 +1269,10 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
 
     private void initZeroView() {
         mMainMenuList = findViewById(R.id.main_menu_list);
+        mMenuPackageList = findViewById(R.id.menu_package_list);
+        menu_package_header = findViewById(R.id.menu_package_header);
+        menu_package_current = findViewById(R.id.menu_package_current);
+        open_image_menu = findViewById(R.id.open_image_menu);
         scrollView_main = findViewById(R.id.scrollView_main);
         file_layout = findViewById(R.id.file_layout);
         main_card = findViewById(R.id.main_card);
@@ -1325,6 +1341,9 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
                 open_image.setRotation(0);
             }
         });
+        if (menu_package_header != null) {
+            menu_package_header.setOnClickListener(v -> toggleMenuPackageExpand());
+        }
         boolean hideGuideLayout = UserSetManage.Companion.get().getZTUserBean().isHideGuideLayout();
         if (hideGuideLayout) {
             mGuideLayout.setVisibility(View.GONE);
@@ -1876,12 +1895,8 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
 
     private void initMenu() {
         writerMainMenuConfig(false);
+        loadActiveMainMenu();
         ZTUserBean ztUserBean = UserSetManage.Companion.get().getZTUserBean();
-        if (ztUserBean.isDisableMainConfigMenu()) {
-            initListMenu(MainMenuConfig.getMainMenuCategoryDatas());
-        } else {
-            initListMenu(XMLMainMenuConfig.getXmlMainMenuCategoryDatas(this));
-        }
         UUtils.runOnThread(() -> {
             //写入菜单背景
             if (!ztUserBean.isWriterMenuBack()) {
@@ -1893,6 +1908,16 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
             }
             showMenuBack();
         });
+    }
+
+    private void loadActiveMainMenu() {
+        MainMenuPackageManager.ensureDefaultActiveMenu(this);
+        if (MainMenuPackageManager.isProgramMenuActive(this)) {
+            initListMenu(ProgramMainMenuConfig.getProgramMainMenuCategoryDatas(this));
+        } else {
+            initListMenu(XMLMainMenuConfig.getXmlMainMenuCategoryDatas(this));
+        }
+        initMenuPackageCard();
     }
 
     private void showMenuBack() {
@@ -1933,13 +1958,7 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
                 UUtils.writerFile("mainmenu/cn/zt_menu_config.xml", mainMenuXmlPathFile);
             }
         } else {
-            Log.i(TAG, "writerMainMenuConfig smart update for language: " + targetLang);
-            try {
-                com.termux.zerocore.utils.XMLMergeUtils.smartUpdateMenuLanguage(this, targetLang);
-            } catch (Throwable e) {
-                Log.e(TAG, "Critical Error: XMLMergeUtils failed!", e);
-                e.printStackTrace();
-            }
+            Log.i(TAG, "writerMainMenuConfig keep existing menu file");
         }
     }
 
@@ -2220,7 +2239,200 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
             mMainMenuAdapter.release();
             mMainMenuAdapter = null;
         }
-        initListMenu(XMLMainMenuConfig.getXmlMainMenuCategoryDatas(TermuxActivity.this));
+        MainMenuPackageManager.ensureDefaultActiveMenu(this);
+        if (MainMenuPackageManager.isProgramMenuActive(this)) {
+            initListMenu(ProgramMainMenuConfig.getProgramMainMenuCategoryDatas(TermuxActivity.this));
+        } else {
+            initListMenu(XMLMainMenuConfig.getXmlMainMenuCategoryDatas(TermuxActivity.this));
+        }
+        refreshMenuPackageList();
+    }
+
+    private void initMenuPackageCard() {
+        if (mMenuPackageList == null) {
+            return;
+        }
+        mMenuPackageExpanded = false;
+        mMenuPackageList.setVisibility(View.GONE);
+        if (open_image_menu != null) {
+            open_image_menu.setRotation(0);
+        }
+        refreshMenuPackageHeader();
+        mMenuPackageAdapter = new MainMenuPackageAdapter(
+            MainMenuPackageManager.buildListItems(this),
+            new MainMenuPackageAdapter.Listener() {
+                @Override
+                public void onNetworkUpdate() {
+                    showMenuNetworkUpdateConfirmDialog();
+                }
+
+                @Override
+                public void onPackageSelected(MainMenuPackageInfo info) {
+                    if (MainMenuPackageManager.applyMenuPackageInfo(TermuxActivity.this, info)) {
+                        UUtils.showMsg(UUtils.getString(R.string.menu_package_apply_success));
+                        refreshMainMenu();
+                    } else {
+                        UUtils.showMsg(UUtils.getString(R.string.menu_package_apply_fail));
+                    }
+                }
+
+                @Override
+                public void onInstallClick() {
+                    showMenuPackagePickDialog();
+                }
+
+                @Override
+                public void onBackupClick(MainMenuPackageInfo info) {
+                    showMenuBackupNameDialog();
+                }
+
+                @Override
+                public void onDeleteClick(MainMenuPackageInfo info) {
+                    showMenuDeleteConfirmDialog(info);
+                }
+            });
+        mMenuPackageList.setLayoutManager(new LinearLayoutManager(getApplicationContext()));
+        mMenuPackageList.setAdapter(mMenuPackageAdapter);
+    }
+
+    private void toggleMenuPackageExpand() {
+        if (mMenuPackageList == null) {
+            return;
+        }
+        mMenuPackageExpanded = !mMenuPackageExpanded;
+        mMenuPackageList.setVisibility(mMenuPackageExpanded ? View.VISIBLE : View.GONE);
+        if (open_image_menu != null) {
+            open_image_menu.setRotation(mMenuPackageExpanded ? 180 : 0);
+        }
+    }
+
+    private void refreshMenuPackageHeader() {
+        if (menu_package_current == null) {
+            return;
+        }
+        String label = MainMenuPackageManager.getActivePackageLabel(this);
+        menu_package_current.setText(getString(R.string.menu_package_current_menu, label));
+    }
+
+    private void showMenuDeleteConfirmDialog(MainMenuPackageInfo info) {
+        YesNoDialog dialog = new YesNoDialog(this);
+        dialog.getTitleTv().setText(UUtils.getString(R.string.提示));
+        int msgRes = info.isActive()
+            ? R.string.menu_package_delete_confirm_active
+            : R.string.menu_package_delete_confirm;
+        dialog.getMsgTv().setText(getString(msgRes, info.getLabel()));
+        dialog.getMsgTv().setVisibility(View.VISIBLE);
+        dialog.getInputSystemName().setVisibility(View.GONE);
+        dialog.getNoTv().setOnClickListener(v -> dialog.dismiss());
+        dialog.getYesTv().setOnClickListener(v -> {
+            dialog.dismiss();
+            performMenuPackageDelete(info);
+        });
+        dialog.show();
+    }
+
+    private void performMenuPackageDelete(MainMenuPackageInfo info) {
+        UUtils.runOnThread(() -> {
+            boolean success = MainMenuPackageManager.deleteInstalledPackage(
+                TermuxActivity.this, info);
+            UUtils.runOnUIThread(() -> {
+                if (success) {
+                    UUtils.showMsg(UUtils.getString(R.string.menu_package_delete_success));
+                    if (info.isActive()) {
+                        refreshMainMenu();
+                    } else {
+                        refreshMenuPackageList();
+                    }
+                } else {
+                    UUtils.showMsg(UUtils.getString(R.string.menu_package_delete_fail));
+                }
+            });
+        });
+    }
+
+    private void showMenuNetworkUpdateConfirmDialog() {
+        YesNoDialog dialog = new YesNoDialog(this);
+        dialog.getTitleTv().setText(UUtils.getString(R.string.提示));
+        dialog.getMsgTv().setText(UUtils.getString(R.string.menu_package_network_update_confirm));
+        dialog.getMsgTv().setVisibility(View.VISIBLE);
+        dialog.getInputSystemName().setVisibility(View.GONE);
+        dialog.getNoTv().setOnClickListener(v -> dialog.dismiss());
+        dialog.getYesTv().setOnClickListener(v -> {
+            dialog.dismiss();
+            startMenuNetworkUpdate();
+        });
+        dialog.show();
+    }
+
+    private void startMenuNetworkUpdate() {
+        if (mMenuPackageAdapter != null) {
+            mMenuPackageAdapter.setNetworkUpdating(true);
+        }
+        MainMenuPackageManager.fetchFromNetwork(TermuxActivity.this, (success, message) -> {
+            if (mMenuPackageAdapter != null) {
+                mMenuPackageAdapter.setNetworkUpdating(false);
+            }
+            UUtils.showMsg(message);
+            refreshMainMenu();
+        });
+    }
+
+    private void showMenuBackupNameDialog() {
+        YesNoDialog dialog = new YesNoDialog(this);
+        dialog.createEditDialog(UUtils.getString(R.string.menu_package_backup_name_title));
+        dialog.getInputSystemName().setHint(UUtils.getString(R.string.menu_package_backup_name_hint));
+        dialog.getYesTv().setOnClickListener(v -> {
+            String name = dialog.getInputSystemName().getText().toString().trim();
+            if (TextUtils.isEmpty(name)) {
+                UUtils.showMsg(UUtils.getString(R.string.menu_package_backup_name_empty));
+                return;
+            }
+            dialog.dismiss();
+            UUtils.runOnThread(() -> {
+                File backup = MainMenuPackageManager.backupCurrentMenu(TermuxActivity.this, name);
+                UUtils.runOnUIThread(() -> {
+                    if (backup != null) {
+                        UUtils.showMsg(getString(R.string.menu_package_backup_success,
+                            MainMenuPackageManager.getMenuDirDisplayPath(TermuxActivity.this))
+                            + "\n" + backup.getName());
+                        refreshMenuPackageList();
+                    } else {
+                        UUtils.showMsg(UUtils.getString(R.string.menu_package_backup_fail));
+                    }
+                });
+            });
+        });
+        dialog.show();
+    }
+
+    private void showMenuPackagePickDialog() {
+        MenuPackagePickDialog dialog = new MenuPackagePickDialog(this);
+        dialog.setOnPickListener(zipFile -> {
+            LoadingDialog loadingDialog = new LoadingDialog(TermuxActivity.this);
+            loadingDialog.show();
+            loadingDialog.getMsg().setText(UUtils.getString(R.string.正在载入中));
+            UUtils.runOnThread(() -> {
+                boolean success = MainMenuPackageManager.installAndApplyFromMenuZip(
+                    TermuxActivity.this, zipFile);
+                UUtils.runOnUIThread(() -> {
+                    loadingDialog.dismiss();
+                    if (success) {
+                        UUtils.showMsg(UUtils.getString(R.string.menu_package_install_success));
+                        refreshMainMenu();
+                    } else {
+                        UUtils.showMsg(UUtils.getString(R.string.menu_package_install_fail));
+                    }
+                });
+            });
+        });
+        dialog.show();
+    }
+
+    private void refreshMenuPackageList() {
+        refreshMenuPackageHeader();
+        if (mMenuPackageAdapter != null) {
+            mMenuPackageAdapter.updateItems(MainMenuPackageManager.buildListItems(this));
+        }
     }
 
     private void initZeroTermux() {
@@ -2509,8 +2721,11 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
             BackgroundBlurUtils.removeBlur(back_img);
         }
 
+        String textShadowEnabled = SaveData.INSTANCE.getStringOther("text_shadow_enabled");
         String textShadowStrength = SaveData.INSTANCE.getStringOther("text_shadow_strength");
-        if (textShadowStrength != null && !textShadowStrength.isEmpty() && !textShadowStrength.equals("def")) {
+        if (textShadowEnabled != null && textShadowEnabled.equals("false")) {
+            TerminalRenderer.TEXT_SHADOW_PROGRESS = 0;
+        } else if (textShadowStrength != null && !textShadowStrength.isEmpty() && !textShadowStrength.equals("def")) {
             try { TerminalRenderer.TEXT_SHADOW_PROGRESS = Integer.parseInt(textShadowStrength); } catch (Exception e) { }
         }
 
@@ -2575,6 +2790,13 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
                    FileHttpUtils.Companion.get().bootHttp();
                }
             }).start();
+        }
+        if (ztUserBean.isZtWorkstationEnabled()) {
+            if (ztUserBean.isZtWorkstationAutoStart()) {
+                com.termux.zerocore.workstation.ZtWorkstationManager.ensureRunningIfEnabled(this);
+            } else {
+                com.termux.zerocore.workstation.ZtWorkstationManager.ensureRunningForActiveSession(this);
+            }
         }
     }
     //@}
