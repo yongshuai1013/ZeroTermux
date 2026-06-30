@@ -36,11 +36,13 @@ public class TextSelectionCursorController implements CursorController {
 	// ZeroTermux add {@
    // public final int ACTION_PASTE = 2;
    // public final int ACTION_MORE = 3;
-    public final int ACTION_ADD = 2;
-    public final int ENABLE_TOOLBOX = 3;
-    public final int ACTION_PASTE = 4;
-    public final int ACTION_MORE = 5;
+    public final int ACTION_ASK_AI = 2;
+    public final int ACTION_ADD = 3;
+    public final int ENABLE_TOOLBOX = 4;
+    public final int ACTION_PASTE = 5;
+    public final int ACTION_MORE = 6;
     private AddCommend mAddCommend;
+    private AskAiListener mAskAiListener;
 	// @}
 
     public TextSelectionCursorController(TerminalView terminalView) {
@@ -54,12 +56,18 @@ public class TextSelectionCursorController implements CursorController {
     @Override
     public void show(MotionEvent event) {
         setInitialTextSelectionPosition(event);
-        mStartHandle.positionAtCursor(mSelX1, mSelY1, true);
-        mEndHandle.positionAtCursor(mSelX2 + 1, mSelY2, true);
-
-        setActionModeCallBacks();
         mShowStartTime = System.currentTimeMillis();
         mIsSelectingText = true;
+        setActionModeCallBacks();
+        // Floating ActionMode can dismiss handle popups if shown too early; refresh after layout.
+        terminalView.post(this::refreshSelectionHandles);
+    }
+
+    private void refreshSelectionHandles() {
+        if (!isActive()) return;
+        mStartHandle.positionAtCursor(mSelX1, mSelY1, true);
+        mEndHandle.positionAtCursor(mSelX2 + 1, mSelY2, true);
+        terminalView.invalidate();
     }
 
     @Override
@@ -127,6 +135,7 @@ public class TextSelectionCursorController implements CursorController {
                 ClipboardManager clipboard = (ClipboardManager) terminalView.getContext().getSystemService(Context.CLIPBOARD_SERVICE);
                 menu.add(Menu.NONE, ACTION_COPY, Menu.NONE, R.string.copy_text).setShowAsAction(show);
 				// ZeroTermux add {@
+                menu.add(Menu.NONE, ACTION_ASK_AI, Menu.NONE, R.string.ask_ai_text).setShowAsAction(show);
                 menu.add(Menu.NONE, ACTION_ADD, Menu.NONE, R.string.add_text).setShowAsAction(show);
                 menu.add(Menu.NONE, ENABLE_TOOLBOX, Menu.NONE, R.string.enable_toolbox).setEnabled(data != null && !(data.isEmpty()) &&!(data.equals("def"))).setShowAsAction(show);
                 // @}
@@ -151,6 +160,12 @@ public class TextSelectionCursorController implements CursorController {
                     case ACTION_COPY:
                         String selectedText = getSelectedText();
                         terminalView.mTermSession.onCopyTextToClipboard(selectedText);
+                        terminalView.stopTextSelectionMode();
+                        break;
+                    case ACTION_ASK_AI:
+                        if (mAskAiListener != null) {
+                            mAskAiListener.onAskAi(getSelectedText());
+                        }
                         terminalView.stopTextSelectionMode();
                         break;
                     case ACTION_PASTE:
@@ -440,8 +455,16 @@ public class TextSelectionCursorController implements CursorController {
         this.mAddCommend = mAddCommend;
     }
 
+    public void setAskAiListener(AskAiListener askAiListener) {
+        this.mAskAiListener = askAiListener;
+    }
+
     public interface AddCommend {
         void editCommend(String edit);
+    }
+
+    public interface AskAiListener {
+        void onAskAi(String selectedText);
     }
 	// @}
 }

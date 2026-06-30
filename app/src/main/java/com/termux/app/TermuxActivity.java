@@ -142,6 +142,9 @@ import com.termux.zerocore.otg.OTGManager;
 import com.termux.zerocore.settings.ZtSettingsActivity;
 import com.termux.zerocore.config.ztcommand.ZTSocketService;
 import com.termux.zerocore.config.ztcommand.config.ZTKeyConstants;
+import com.termux.zerocore.config.ztcommand.navigation.ZtForegroundActivityHolder;
+import com.termux.zerocore.config.ztcommand.navigation.ZtNavigationHelper;
+import com.termux.zerocore.config.ztcommand.navigation.ZtNavigationHost;
 import com.termux.zerocore.url.FileUrl;
 import com.termux.zerocore.utils.BitmapUtils;
 import com.termux.zerocore.utils.FileHttpUtils;
@@ -149,6 +152,9 @@ import com.termux.zerocore.utils.FileIOUtils;
 import com.termux.zerocore.utils.IsInstallCommand;
 import com.termux.zerocore.utils.PhoneUtils;
 import com.termux.zerocore.utils.SingletonCommunicationUtils;
+import com.termux.zerocore.ai.agent.ZtAiAgentPanelHelper;
+import com.termux.zerocore.ai.config.ZtAiConfigSideEffects;
+import com.termux.zerocore.ai.config.ZtBeautifyUiEffects;
 import com.termux.zerocore.utils.SmsUtils;
 import com.termux.zerocore.utils.UUUtils;
 import com.termux.zerocore.utils.BackgroundBlurUtils;
@@ -195,7 +201,7 @@ import io.noties.markwon.Markwon;
  */
  // ZeroTermux add {@
  //public final class TermuxActivity extends AppCompatActivity implements ServiceConnection {
-public final class TermuxActivity extends AppCompatActivity implements ServiceConnection, View.OnClickListener, TerminalView.DoubleClickListener, SingletonCommunicationUtils.SingletonCommunicationListener {
+public final class TermuxActivity extends AppCompatActivity implements ServiceConnection, View.OnClickListener, TerminalView.DoubleClickListener, SingletonCommunicationUtils.SingletonCommunicationListener, ZtNavigationHost {
  //@}
     /**
      * The connection to the {@link TermuxService}. Requested in {@link #onCreate(Bundle)} with a call to
@@ -636,8 +642,8 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
 		// ZeroTermux add {@
         if (mTermuxTerminalViewClient != null) {
             mTermuxTerminalViewClient.setKeyUpDown(key -> {
-                if (UserSetManage.Companion.get()
-                    .getZTUserBean().isResetVolume()) {
+                ZTUserBean bean = UserSetManage.Companion.get().getZTUserBean();
+                if (bean.isResetVolume()) {
                     return;
                 }
                 if (getDrawer().isOpened()) {
@@ -645,13 +651,14 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
                     return;
                 }
                 if (key == KeyEvent.KEYCODE_VOLUME_UP) {
-                    getDrawer().smoothLeftOpen();
+                    if (!bean.isResetVolume()) {
+                        getDrawer().smoothLeftOpen();
+                    }
                     return;
                 }
 
                 if (key == KeyEvent.KEYCODE_VOLUME_DOWN) {
-                    getDrawer().smoothRightOpen();
-                    return;
+                    openRightSideOrAiPanel();
                 }
             });
 			// @}
@@ -1013,7 +1020,85 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
     public void setExtraKeysView(ExtraKeysView extraKeysView) {
         mExtraKeysView = extraKeysView;
     }
+ // ZeroTermux add {@
+    /**
+     * 将 SaveData 中的 font_color 应用到终端文字与底部 ExtraKeys。
+     * initColorConfig 可能在 ExtraKeysView 创建之前执行，需在 reload 后再调用一次。
+     */
+    public void applySavedFontColorToUi() {
+        String font_color = SaveData.INSTANCE.getStringOther("font_color");
+        if (font_color == null || font_color.isEmpty() || font_color.equals("def")) {
+            return;
+        }
+        try {
+            int color = Integer.parseInt(font_color);
+            TerminalRenderer.COLOR_TEXT = color;
+            ExtraKeysView.DEFAULT_BUTTON_TEXT_COLOR = color;
+            if (mTerminalView != null) {
+                mTerminalView.invalidate();
+            }
+            if (mExtraKeysView != null) {
+                mExtraKeysView.setButtonTextColor(color);
+                mExtraKeysView.setColorButton();
+                mExtraKeysView.invalidate();
+            }
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+    }
 
+    /** 将 SaveData 中的 back_color / change_text 应用到终端背景遮罩。 */
+    public void applySavedBackColorToUi() {
+        String stored = SaveData.INSTANCE.getStringOther("back_color");
+        if (stored == null || stored.isEmpty() || stored.equals("def")) {
+            return;
+        }
+        try {
+            applyBackOverlayColor(Integer.parseInt(stored));
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+    }
+
+    /** 立即应用遮罩色（含透明度），手动美化与 AI 共用。 */
+    public void applyBackOverlayColor(int color) {
+        if (back_color == null) {
+            return;
+        }
+        back_color.setBackgroundColor(color);
+        applyBackOverlayAlpha();
+        ensureBackOverlayVisible();
+    }
+
+    private void applyBackOverlayAlpha() {
+        if (back_color == null) {
+            return;
+        }
+        String changeText = SaveData.INSTANCE.getStringOther("change_text");
+        float alpha = 1f;
+        if (changeText != null && !changeText.isEmpty() && !changeText.equals("def")) {
+            try {
+                alpha = Integer.parseInt(changeText) / 100f;
+            } catch (Exception ignored) { }
+        }
+        back_color.setAlpha(alpha);
+    }
+
+    private void ensureBackOverlayVisible() {
+        if (back_color == null) {
+            return;
+        }
+        ZTUserBean bean = UserSetManage.Companion.get().getZTUserBean();
+        if (!bean.isShowCommand()) {
+            return;
+        }
+        if (mInternalPassage && !MainActivity.isConnected()) {
+            back_color.setVisibility(View.INVISIBLE);
+            return;
+        }
+        back_color.setVisibility(View.VISIBLE);
+    }
+    // @}
     // ZeroTermux add {@
     public SlidingConsumer getDrawer() {
         return mSlidingConsumer;
@@ -1136,6 +1221,13 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
         return this.getTerminalView().getText555();
     }
 
+    // ZeroTermux add {@
+    @Override
+    public String getVisibleTerminalText() {
+        return this.getTerminalView().getVisibleTerminalText();
+    }
+    // @}
+
     class TermuxActivityBroadcastReceiver extends BroadcastReceiver {
         @Override
         public void onReceive(Context context, Intent intent) {
@@ -1175,6 +1267,9 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
             if (mExtraKeysView != null) {
                 mExtraKeysView.setButtonTextAllCaps(mProperties.shouldExtraKeysTextBeAllCaps());
                 mExtraKeysView.reload(mTermuxTerminalExtraKeys.getExtraKeysInfo(), mTerminalToolbarDefaultHeight);
+                 // ZeroTermux add {@
+                applySavedFontColorToUi();
+                // @}
             }
 
             // Update NightMode.APP_NIGHT_MODE
@@ -1266,6 +1361,9 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
     private TextView mGuideContent;
     LocalBroadcastManager localBroadcastManager;
     LocalReceiver localReceiver;
+    // ZeroTermux add {@
+    private ZtAiAgentPanelHelper mAiAgentPanelHelper;
+    // @}
 
     private void initZeroView() {
         mMainMenuList = findViewById(R.id.main_menu_list);
@@ -1357,7 +1455,55 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
         });
         initDataMsgInfo();
         setEgInstallStatus();
+        // ZeroTermux add {@
+        View aiOverlay = findViewById(R.id.ai_agent_panel_overlay);
+        View aiPanelRoot = findViewById(R.id.ai_agent_panel_root);
+        if (aiOverlay != null && aiPanelRoot != null) {
+            mAiAgentPanelHelper = new ZtAiAgentPanelHelper(aiOverlay, aiPanelRoot, () -> {
+                if (!getDrawer().isOpened()) {
+                    getDrawer().smoothRightOpen();
+                }
+            });
+        }
+        // @}
     }
+
+    // ZeroTermux add {@
+    private void showAiAgentPanel(String selectedText) {
+        if (mAiAgentPanelHelper != null) {
+            mAiAgentPanelHelper.show(selectedText);
+        }
+    }
+
+    private void openRightSideOrAiPanel() {
+        if (getDrawer().isOpened()) {
+            getDrawer().smoothClose();
+            return;
+        }
+        if (UserSetManage.Companion.get().getZTUserBean().isAiAgentPanelEnabled()) {
+            if (mAiAgentPanelHelper != null) {
+                mAiAgentPanelHelper.toggle(null);
+            }
+            return;
+        }
+        getDrawer().smoothRightOpen();
+    }
+
+    /** Volume-/drawer shortcuts when「还原音量+-键」is off (isResetVolume=false). */
+    public boolean shouldInterceptVolumeKeysForZeroTermux() {
+        return !UserSetManage.Companion.get().getZTUserBean().isResetVolume();
+    }
+
+    @Override
+    public void prepareForPageNavigation() {
+        if (mAiAgentPanelHelper != null) {
+            mAiAgentPanelHelper.minimizeForNavigation();
+        }
+        if (getDrawer().isOpened()) {
+            getDrawer().smoothClose();
+        }
+    }
+    // @}
 
     private void showKeyBord() {
         InputMethodManager imm = (InputMethodManager) getSystemService(Context.INPUT_METHOD_SERVICE);
@@ -1495,6 +1641,9 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
             }
         }
         UserSetManage.Companion.get().setZTUserBean(ztUserBeanShow);
+        if (mInternalPassage) {
+            scheduleApplyX11SystemInsets();
+        }
     }
     public void hideTermuxView() {
         ZTUserBean ztUserBeanHide = UserSetManage.Companion.get().getZTUserBean();
@@ -1519,6 +1668,9 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
         }
 
         UserSetManage.Companion.get().setZTUserBean(ztUserBeanHide);
+        if (mInternalPassage) {
+            scheduleApplyX11SystemInsets();
+        }
     }
 
 
@@ -1552,7 +1704,7 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
             return;
         }
         if (x >= width - 100) {
-            getDrawer().smoothRightOpen();
+            openRightSideOrAiPanel();
             return;
         }
         BoomWindow.SWITCH = false;
@@ -1912,12 +2064,15 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
 
     private void loadActiveMainMenu() {
         MainMenuPackageManager.ensureDefaultActiveMenu(this);
-        if (MainMenuPackageManager.isProgramMenuActive(this)) {
-            initListMenu(ProgramMainMenuConfig.getProgramMainMenuCategoryDatas(this));
-        } else {
-            initListMenu(XMLMainMenuConfig.getXmlMainMenuCategoryDatas(this));
-        }
+        initListMenu(loadMainMenuCategoryDatas());
         initMenuPackageCard();
+    }
+
+    private ArrayList<MainMenuCategoryData> loadMainMenuCategoryDatas() {
+        if (MainMenuPackageManager.isProgramMenuActive(this)) {
+            return ProgramMainMenuConfig.getProgramMainMenuCategoryDatas(this);
+        }
+        return XMLMainMenuConfig.getXmlMainMenuCategoryDatas(this);
     }
 
     private void showMenuBack() {
@@ -1987,19 +2142,17 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
             return false;
         }
         ZTUserBean ztUserBean = UserSetManage.Companion.get().getZTUserBean();
-        if (!ztUserBean.isResetVolume() || MainActivity.isConnected()) {
-            if (keyCode == KeyEvent.KEYCODE_VOLUME_UP) {
+        if (keyCode == KeyEvent.KEYCODE_VOLUME_DOWN) {
+            if (!ztUserBean.isResetVolume() || MainActivity.isConnected()) {
+                openRightSideOrAiPanel();
+                return true;
+            }
+        } else if (keyCode == KeyEvent.KEYCODE_VOLUME_UP) {
+            if (!ztUserBean.isResetVolume() || MainActivity.isConnected()) {
                 if (getDrawer().isOpened()) {
                     getDrawer().smoothClose();
                 } else {
                     getDrawer().smoothLeftOpen();
-                }
-                return true;
-            } else if (keyCode == KeyEvent.KEYCODE_VOLUME_DOWN) {
-                if (getDrawer().isOpened()) {
-                    getDrawer().smoothClose();
-                } else {
-                    getDrawer().smoothRightOpen();
                 }
                 return true;
             }
@@ -2105,7 +2258,7 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
         mBeautifySettingDialog.setBackColorChange(new BeautifySettingDialog.BackColorChange() {
             @Override
             public void onColorChange(int color) {
-                back_color.setBackgroundColor(color);
+                applyBackOverlayColor(color);
             }
         });
 
@@ -2113,7 +2266,10 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
 
         mBeautifySettingDialog.setOnChangeTextView(alpha -> {
             Logger.logDebug(LOG_TAG, "back_ap_alpha:" + alpha);
-            back_color.setAlpha(alpha / 100f);
+            if (back_color != null) {
+                back_color.setAlpha(alpha / 100f);
+                ensureBackOverlayVisible();
+            }
         });
         mBeautifySettingDialog.setOnTextCheckedChangeListener(change -> {
             Logger.logDebug(LOG_TAG, "setOnTextCheckedChangeListener:" + change);
@@ -2142,11 +2298,13 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
                 ExtraKeysView.DEFAULT_BUTTON_TEXT_COLOR = color;
                 mTerminalView.invalidate();
                 if (mExtraKeysView != null) {
+                    mExtraKeysView.setButtonTextColor(color);
                     mExtraKeysView.setColorButton();
                     mExtraKeysView.invalidate();
                 }
             }
         });
+        applySavedBackColorToUi();
         mBeautifySettingDialog.show();
         mBeautifySettingDialog.setCancelable(true);
     }
@@ -2189,6 +2347,12 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
                 LogUtils.d(TAG, "message is null，return：" + message);
                 return;
             }
+            if (message.startsWith(ZtNavigationHelper.OPEN_PAGE_MESSAGE_PREFIX)) {
+                String pageId = message.substring(ZtNavigationHelper.OPEN_PAGE_MESSAGE_PREFIX.length()).trim();
+                android.util.Log.i("ZT_NAV", "TermuxActivity dispatch openpage: " + pageId);
+                ZtNavigationHelper.openPageInternal(TermuxActivity.this, pageId, null);
+                return;
+            }
             switch (message) {
                 // 调用本页面 VIEW 不可写到 Config 当中，否则可能造成内存泄漏
                 case ZTKeyConstants.ZT_COMMAND_LEFT:
@@ -2228,6 +2392,15 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
                     writerMainMenuConfig(true);
                     refreshMainMenu();
                     break;
+                case ZtAiConfigSideEffects.RELOAD_BEAUTIFY_MESSAGE:
+                    initColorConfig();
+                    if (mTerminalView != null) {
+                        mTerminalView.invalidate();
+                    }
+                    break;
+                case ZtAiConfigSideEffects.RELOAD_BEAUTIFY_UI_MESSAGE:
+                    ZtBeautifyUiEffects.applyToActivity(TermuxActivity.this);
+                    break;
             }
         }
     };
@@ -2240,12 +2413,61 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
             mMainMenuAdapter = null;
         }
         MainMenuPackageManager.ensureDefaultActiveMenu(this);
-        if (MainMenuPackageManager.isProgramMenuActive(this)) {
-            initListMenu(ProgramMainMenuConfig.getProgramMainMenuCategoryDatas(TermuxActivity.this));
-        } else {
-            initListMenu(XMLMainMenuConfig.getXmlMainMenuCategoryDatas(TermuxActivity.this));
-        }
+        initListMenu(loadMainMenuCategoryDatas());
         refreshMenuPackageList();
+    }
+
+    /** 供 AI / 外部刷新左侧 XML 菜单。 */
+    public void refreshMainMenuPublic() {
+        refreshMainMenu();
+    }
+
+    /** 刷新菜单并展开、滚动到指定分组（选项卡）。 */
+    public void refreshMainMenuAndSwitchToGroup(String groupName) {
+        refreshMainMenu();
+        if (mMainMenuList != null) {
+            mMainMenuList.post(() -> switchMainMenuToGroup(groupName));
+        } else {
+            switchMainMenuToGroup(groupName);
+        }
+    }
+
+    private void switchMainMenuToGroup(String groupName) {
+        if (mMainMenuAdapter == null || TextUtils.isEmpty(groupName)) {
+            return;
+        }
+        int index = mMainMenuAdapter.findGroupIndexByName(groupName);
+        if (index < 0) {
+            return;
+        }
+        mMainMenuAdapter.activateGroup(index);
+        mMainMenuList.smoothScrollToPosition(index);
+        if (getDrawer() != null && getDrawer().isClosed()) {
+            getDrawer().smoothLeftOpen();
+        }
+    }
+
+    /** 刷新 Menu 菜单包列表（供 AI 等外部调用）。 */
+    public void refreshMenuPackageListPublic() {
+        refreshMenuPackageList();
+    }
+
+    /** 刷新并切换到 Menu 菜单区的「AI创建」选项。 */
+    public void refreshMainMenuAndSelectAiMenuPackage() {
+        if (MainMenuPackageManager.applyAiCreatedMenuPackage(this)) {
+            refreshMainMenu();
+            refreshMenuPackageList();
+            if (!mMenuPackageExpanded && mMenuPackageList != null) {
+                mMenuPackageExpanded = true;
+                mMenuPackageList.setVisibility(View.VISIBLE);
+                if (open_image_menu != null) {
+                    open_image_menu.setRotation(180);
+                }
+            }
+            if (getDrawer() != null && getDrawer().isClosed()) {
+                getDrawer().smoothLeftOpen();
+            }
+        }
     }
 
     private void initMenuPackageCard() {
@@ -2333,7 +2555,7 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
 
     private void performMenuPackageDelete(MainMenuPackageInfo info) {
         UUtils.runOnThread(() -> {
-            boolean success = MainMenuPackageManager.deleteInstalledPackage(
+            boolean success = MainMenuPackageManager.deleteMenuPackage(
                 TermuxActivity.this, info);
             UUtils.runOnUIThread(() -> {
                 if (success) {
@@ -2455,6 +2677,7 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
         if(mInternalPassage && mMainActivity != null) {
             mMainActivity.init();
             regMainViewKeyDown();
+            scheduleApplyX11SystemInsets();
         }
         try {
             startService(new Intent(this, ZTSocketService.class));
@@ -2469,6 +2692,15 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
         SingletonCommunicationUtils.getInstance().setSingletonCommunicationListener(this);
     }
 	// ZeroTermux add {@
+    private void scheduleApplyX11SystemInsets() {
+        if (!mInternalPassage || mTermuxActivityRootView == null) {
+            return;
+        }
+        Runnable apply = () -> mTermuxActivityRootView.applyX11SystemInsets(TermuxActivity.this);
+        mTermuxActivityRootView.post(apply);
+        mTermuxActivityRootView.postDelayed(apply, 200);
+    }
+
     private void initStatusBarHeight() {
         int statusBarHeight = UUtils.getStatusBarHeight(this);
         int navigationBarHeight = UUtils.getNavigationBarHeight(this);
@@ -2559,6 +2791,7 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
             }
 
         });
+        mTerminalView.getTextSelectionCursorControllerView().setAskAiListener(this::showAiAgentPanel);
 
         mTerminalView.setActionPointer2ClickListener(() -> openToolDialog(true, 0, -1));
     }
@@ -2579,22 +2812,20 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
         if (mMainActivity != null) {
             mMainActivity.setMainActivityOnKeyDown((keyCode, keyEvent) -> {
                 Log.i(TAG, "handleKey keyCode termux: " + keyCode);
-                if (UserSetManage.Companion.get()
-                    .getZTUserBean().isResetVolume()) {
+                ZTUserBean bean = UserSetManage.Companion.get().getZTUserBean();
+                if (bean.isResetVolume()) {
                     return false;
                 }
                 Log.i(TAG, "handleKey keyCode getDrawer().isOpened(): " + getDrawer().isOpened());
                 if (keyCode == KeyEvent.KEYCODE_VOLUME_DOWN) {
-                    if (getDrawer().isOpened()) {
-                        getDrawer().smoothClose();
-                    } else {
-                        getDrawer().smoothRightOpen();
-                    }
+                    openRightSideOrAiPanel();
                 } else if (keyCode == KeyEvent.KEYCODE_VOLUME_UP) {
-                    if (getDrawer().isOpened()) {
-                        getDrawer().smoothClose();
-                    } else {
-                        getDrawer().smoothLeftOpen();
+                    if (!bean.isResetVolume()) {
+                        if (getDrawer().isOpened()) {
+                            getDrawer().smoothClose();
+                        } else {
+                            getDrawer().smoothLeftOpen();
+                        }
                     }
                 } else if (keyCode == KeyEvent.FLAG_KEEP_TOUCH_MODE) {
                     finish();
@@ -2659,6 +2890,11 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
     }
 
     public void clear() {
+        clearBeautifyStyle();
+    }
+
+    /** 与菜单「清空美化」相同：重置字体/遮罩/背景图/视频（SaveData 须已由 FileIOUtils.clearStyle 清除）。 */
+    public void clearBeautifyStyle() {
         VideoUtils.getInstance().onDestroy();
         back_video.setVisibility(View.GONE);
         back_img.setVisibility(View.GONE);
@@ -2667,8 +2903,12 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
         TerminalRenderer.TEXT_SHADOW_PROGRESS = 0;
         ExtraKeysView.DEFAULT_BUTTON_TEXT_COLOR = Color.parseColor("#ffffff");
         BackgroundBlurUtils.removeBlur(back_img);
-        mTerminalView.invalidate();
+        if (mTerminalView != null) {
+            mTerminalView.invalidate();
+        }
         if (mExtraKeysView != null) {
+            int white = Color.parseColor("#ffffff");
+            mExtraKeysView.setButtonTextColor(white);
             mExtraKeysView.setColorButton();
             mExtraKeysView.invalidate();
         }
@@ -2676,38 +2916,9 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
 
     public void initColorConfig() {
         Log.i(TAG, "initStatuexxxxxxxx initColorConfig....: ");
-        String font_color = SaveData.INSTANCE.getStringOther("font_color");
-        String back_color = SaveData.INSTANCE.getStringOther("back_color");
-        String change_text = SaveData.INSTANCE.getStringOther("change_text");
 
-        if (!(font_color == null || font_color.isEmpty() || font_color.equals("def"))) {
-            try {
-                int color = Integer.parseInt(font_color);
-                TerminalRenderer.COLOR_TEXT = color;
-                ExtraKeysView.DEFAULT_BUTTON_TEXT_COLOR = color;
-                mTerminalView.invalidate();
-                UUtils.showLog("Test:111111");
-                if (mExtraKeysView != null) {
-                    mExtraKeysView.setColorButton();
-                    mExtraKeysView.invalidate();
-                }
-            } catch (Exception e) {
-                e.printStackTrace();
-            }
-        }
-        if (!(back_color == null || back_color.isEmpty() || back_color.equals("def"))) {
-            try {
-                int color = Integer.parseInt(back_color);
-                this.back_color.setBackgroundColor(color);
-            } catch (Exception e) {
-                e.printStackTrace();
-            }
-        }
-        if (!(change_text == null || change_text.isEmpty() || change_text.equals("def"))) {
-            try {
-                this.back_color.setAlpha(Integer.parseInt(change_text) / 100f);
-            } catch (Exception e) { }
-        }
+        applySavedFontColorToUi();
+        applySavedBackColorToUi();
 
         String blurEnabled = SaveData.INSTANCE.getStringOther("blur_enabled");
         String blurRadius = SaveData.INSTANCE.getStringOther("blur_radius");
@@ -2768,11 +2979,14 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
         //初始化ZeroTermux 引擎
         Logger.logVerbose(LOG_TAG, "onResume");
         // ZeroTermux add {@
+        ZtForegroundActivityHolder.set(this);
         VideoUtils.getInstance().onResume();
         initUserData();
         if (mInternalPassage && mMainActivity != null) {
             mMainActivity.onResume();
         }
+        scheduleApplyX11SystemInsets();
+        ZtBeautifyUiEffects.syncBeautifyUiFromBean(this);
         // @}
         IntentFilter filter = new IntentFilter();
         filter.addAction(UsbManager.ACTION_USB_DEVICE_ATTACHED);
@@ -2798,6 +3012,9 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
                 com.termux.zerocore.workstation.ZtWorkstationManager.ensureRunningForActiveSession(this);
             }
         }
+        if (ztUserBean.isZtAiDebugEnabled()) {
+            com.termux.zerocore.aidebug.ZtAiDebugManager.ensureRunningForActiveSession(this);
+        }
     }
     //@}
 
@@ -2809,6 +3026,7 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
 	// @}
 
     private void onDestroyInit() {
+        ZtForegroundActivityHolder.set(null);
         if (SingletonCommunicationUtils.isSingletonCommunicationListenerNull) {
             SingletonCommunicationUtils.getInstance().setSingletonCommunicationListener(null);
         }
@@ -2836,6 +3054,9 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
         if (mInternalPassage && mMainActivity != null) {
             mMainActivity.onWindowFocusChanged(hasFocus);
         }
+        if (hasFocus && mInternalPassage) {
+            scheduleApplyX11SystemInsets();
+        }
     }
 
 
@@ -2845,6 +3066,7 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
         if (mInternalPassage && mMainActivity != null) {
             mMainActivity.onConfigurationChanged(newConfig);
         }
+        scheduleApplyX11SystemInsets();
     }
 
     private void onActivityResultZtInit(int requestCode, int resultCode, @Nullable Intent data) {

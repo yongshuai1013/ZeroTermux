@@ -127,6 +127,10 @@
             android:exported="false"
             android:theme="@style/Theme.AppCompat.NoActionBar" />
 
+        <activity android:name=".zerocore.ai.agent.ZtAgentAiSettingsActivity"
+            android:exported="false"
+            android:theme="@style/Theme.AppCompat.NoActionBar" />
+
         <activity android:name=".zerocore.llm.activity.ZeroTermuxLLMSettingsActivity"
             android:exported="false"
             android:theme="@style/Theme.AppCompat.NoActionBar" />
@@ -422,6 +426,10 @@
         <service android:name=".zerocore.ftp.FsService" />
         <service
             android:name=".zerocore.workstation.ZtWorkstationService"
+            android:exported="false"
+            android:foregroundServiceType="camera|dataSync" />
+        <service
+            android:name=".zerocore.aidebug.ZtAiDebugService"
             android:exported="false"
             android:foregroundServiceType="camera|dataSync" />
         <service

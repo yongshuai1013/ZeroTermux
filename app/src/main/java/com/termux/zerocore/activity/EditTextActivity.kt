@@ -49,7 +49,12 @@ import androidx.recyclerview.widget.RecyclerView
 import com.example.xh_lib.utils.UUtils
 import com.termux.R
 import com.termux.zerocore.dialog.LoadingDialog
+import com.termux.zerocore.ai.editor.ZtEditorAiHost
+import com.termux.zerocore.ai.editor.ZtEditorAiPanelHelper
+import com.termux.zerocore.ai.editor.ZtEditorAiResetHelper
 import com.termux.zerocore.editor.AndroidProjectManager
+import com.termux.zerocore.editor.EditorBottomDockPanel
+import com.termux.zerocore.editor.EditorBuildScriptHelper
 import com.termux.zerocore.editor.EditorAndroidRunner
 import com.termux.zerocore.editor.EditorFileTreeClipboard
 import com.termux.zerocore.editor.EditorFileTreeIcon
@@ -61,8 +66,11 @@ import com.termux.zerocore.editor.EditorHelloProjectType
 import com.termux.zerocore.editor.EditorProgramRunner
 import com.termux.zerocore.editor.EditorRunDetector
 import com.termux.zerocore.editor.EditorRunLanguage
+import com.termux.shared.termux.extrakeys.ExtraKeysView
 import com.termux.zerocore.editor.EditorTerminalInputView
 import com.termux.zerocore.editor.EditorTerminalPanel
+import com.termux.zerocore.editor.EditorX11Panel
+import com.termux.zerocore.editor.EditorX11Environment
 import com.termux.zerocore.editor.lsp.EditorLspLanguage
 import com.termux.zerocore.editor.lsp.EditorLspManager
 import com.termux.zerocore.editor.lsp.EditorLspServerAdapter
@@ -100,7 +108,7 @@ import java.util.regex.PatternSyntaxException
 import kotlin.math.abs
 import kotlin.math.max
 
-class EditTextActivity : AppCompatActivity() {
+class EditTextActivity : AppCompatActivity(), ZtEditorAiHost {
     companion object {
         val TAG = EditTextActivity::class.java.simpleName
         val CODE_JAVA = "source.java"
@@ -194,10 +202,25 @@ class EditTextActivity : AppCompatActivity() {
     private var mEditorUndoButton: ImageView? = null
     private var mEditorRedoButton: ImageView? = null
     private var mEditorMoreButton: ImageView? = null
+    private var mEditorAiButton: TextView? = null
+    private var mEditorSidebarAiButton: TextView? = null
+    private var editorAiPanel: ZtEditorAiPanelHelper? = null
     private var mEditorTerminalButton: ImageView? = null
     private var mEditorRunButton: ImageView? = null
     private var mEditorRunLoading: ProgressBar? = null
     private var editorTerminalPanel: EditorTerminalPanel? = null
+    private var editorX11Panel: EditorX11Panel? = null
+    private var editorBottomDock: EditorBottomDockPanel? = null
+    private val editorDockHeightBridge = object : EditorX11Panel.DockHeightController {
+        override fun saveDockedHeight() {
+            editorBottomDock?.saveDockedHeightBeforeMaximize()
+        }
+
+        override fun restoreDockedHeight() {
+            editorBottomDock?.restoreDockedHeight()
+        }
+    }
+    private var mEditorX11Button: TextView? = null
     private var programRunner: EditorProgramRunner? = null
     private var isProgramRunInProgress = false
     private var mEditorAndroidBuildButton: ImageView? = null
@@ -210,7 +233,7 @@ class EditTextActivity : AppCompatActivity() {
     private var mEditorTabsContainer: LinearLayout? = null
     private var mEditorContentLayout: RelativeLayout? = null
     private var mEditorSymbolBar: LinearLayout? = null
-    private var mEditorTerminalPanelView: View? = null
+    private var mEditorBottomDockView: View? = null
     private var mEditorSidebar: LinearLayout? = null
     private var mSidebarFileTab: TextView? = null
     private var mSidebarSearchTab: TextView? = null
@@ -352,6 +375,22 @@ class EditTextActivity : AppCompatActivity() {
         initializeEditorEnvironment(savedInstanceState) {
             loadFile(file)
             initFileTree(file.parentFile ?: file)
+            handleAiDebugIntentExtras()
+        }
+    }
+
+    private fun handleAiDebugIntentExtras() {
+        val openX11 = intent.getBooleanExtra(com.termux.zerocore.aidebug.ZtAiDebugVncHelper.EXTRA_OPEN_X11_TAB, false)
+        val autoRun = intent.getBooleanExtra(com.termux.zerocore.aidebug.ZtAiDebugVncHelper.EXTRA_AUTO_RUN, false)
+        if (openX11) {
+            code_editor?.postDelayed({
+                editorBottomDock?.openX11Tab()
+            }, 500)
+        }
+        if (autoRun) {
+            code_editor?.postDelayed({
+                onRunBuildScriptClicked()
+            }, if (openX11) 1500 else 800)
         }
     }
 
@@ -363,8 +402,9 @@ class EditTextActivity : AppCompatActivity() {
         val ztUserBean = UserSetManage.get().getZTUserBean()
         code_editor?.isWordwrap = ztUserBean.isEditorWordWrap
         applyEditorFont(false)
+        initEditorAiPanel()
         initEditorTopBar()
-        initEditorTerminal(savedInstanceState)
+        initEditorBottomDock(savedInstanceState)
         initSymbolInput()
         configureCodeEditorInput()
         initSidebar()
@@ -384,7 +424,10 @@ class EditTextActivity : AppCompatActivity() {
         mEditorUndoButton = findViewById(R.id.editor_action_undo)
         mEditorRedoButton = findViewById(R.id.editor_action_redo)
         mEditorMoreButton = findViewById(R.id.editor_action_more)
+        mEditorAiButton = findViewById(R.id.editor_action_ai)
+        mEditorSidebarAiButton = findViewById(R.id.editor_sidebar_ai)
         mEditorTerminalButton = findViewById(R.id.editor_action_terminal)
+        mEditorX11Button = findViewById(R.id.editor_action_x11)
         mEditorRunButton = findViewById(R.id.editor_action_run)
         mEditorRunLoading = findViewById(R.id.editor_action_run_loading)
         mEditorAndroidBuildButton = findViewById(R.id.editor_action_android_build)
@@ -393,7 +436,7 @@ class EditTextActivity : AppCompatActivity() {
         mEditorTabsContainer = findViewById(R.id.editor_tabs_container)
         mEditorContentLayout = findViewById(R.id.editor_content_layout)
         mEditorSymbolBar = findViewById(R.id.editor_symbol_bar)
-        mEditorTerminalPanelView = findViewById(R.id.editor_terminal_panel)
+        mEditorBottomDockView = findViewById(R.id.editor_bottom_dock)
         mEditorSidebar = findViewById(R.id.editor_sidebar)
         mSidebarFileTab = findViewById(R.id.sidebar_file_tab)
         mSidebarSearchTab = findViewById(R.id.sidebar_search_tab)
@@ -436,7 +479,7 @@ class EditTextActivity : AppCompatActivity() {
             isFocusableInTouchMode = true
             getComponent(EditorAutoCompletion::class.java)?.isEnabled = true
             setOnFocusChangeListener { _, hasFocus ->
-                if (hasFocus && editorTerminalPanel?.isVisible() == true) {
+                if (hasFocus && editorBottomDock?.isTerminalTabActive() == true) {
                     findViewById<EditorTerminalInputView>(R.id.editor_terminal_input)?.clearFocus()
                     setSoftKeyboardEnabled(true)
                 }
@@ -481,17 +524,29 @@ class EditTextActivity : AppCompatActivity() {
             updateEditorActionButtons()
         }
         mEditorRunButton?.setOnClickListener {
-            onRunProgramClicked()
+            onRunBuildScriptClicked()
+        }
+        mEditorRunButton?.setOnLongClickListener {
+            onOpenBuildScriptClicked()
+            true
         }
         mEditorAndroidBuildButton?.setOnClickListener {
             onAndroidBuildClicked()
         }
         mEditorTerminalButton?.setOnClickListener {
-            editorTerminalPanel?.toggle()
+            editorBottomDock?.openTerminalTab() ?: openTerminalAtDirectory(null)
+        }
+        mEditorX11Button?.setOnClickListener {
+            editorAiPanel?.dismissPanel()
+            editorBottomDock?.openX11Tab()
+            updateEditorX11ButtonState()
         }
         mEditorMoreButton?.setOnClickListener { view ->
             showEditorMoreMenu(view)
         }
+        val editorAiClick = View.OnClickListener { editorAiPanel?.toggle() }
+        mEditorAiButton?.setOnClickListener(editorAiClick)
+        mEditorSidebarAiButton?.setOnClickListener(editorAiClick)
         mCancelText?.setOnClickListener {
             confirmExitIfDirty()
         }
@@ -507,34 +562,219 @@ class EditTextActivity : AppCompatActivity() {
         updateEditorActionButtons()
     }
 
-    private fun initEditorTerminal(savedInstanceState: Bundle?) {
-        val panel = findViewById<View>(R.id.editor_terminal_panel) ?: return
+    private fun initEditorAiPanel() {
+        val overlay = findViewById<View>(R.id.editor_ai_overlay) ?: return
+        // include 根视图 id 为 editor_ai_panel_root（与 TermuxActivity 智能体面板一致）
+        val panelRoot = findViewById<View>(R.id.editor_ai_panel_root) ?: return
+        val floatingBubble = findViewById<View>(R.id.editor_ai_floating_bubble)
+        val applyPanelHeight: () -> Unit = {
+            val hostHeight = overlay.height
+            if (hostHeight > 0) {
+                val targetHeight = (hostHeight * 0.45f).toInt().coerceAtLeast(dp(180))
+                val lp = panelRoot.layoutParams
+                if (lp != null && lp.height != targetHeight) {
+                    lp.height = targetHeight
+                    panelRoot.layoutParams = lp
+                }
+            }
+        }
+        overlay.viewTreeObserver.addOnGlobalLayoutListener { applyPanelHeight() }
+        overlay.setOnClickListener {
+            if (editorAiPanel?.isVisible() == true) {
+                editorAiPanel?.dismissPanel()
+            }
+        }
+        panelRoot.setOnClickListener { }
+        editorAiPanel = ZtEditorAiPanelHelper(overlay, panelRoot, floatingBubble, this, applyPanelHeight)
+    }
+
+    private fun initEditorBottomDock(savedInstanceState: Bundle?) {
+        val dockView = findViewById<View>(R.id.editor_bottom_dock) ?: return
+        val terminalSection = findViewById<View>(R.id.editor_dock_terminal_section) ?: return
+        val x11Section = findViewById<View>(R.id.editor_dock_x11_section) ?: return
         val terminalView = findViewById<TerminalView>(R.id.editor_terminal_view) ?: return
         val inputView = findViewById<EditorTerminalInputView>(R.id.editor_terminal_input) ?: return
-        val contentLayout = mEditorContentLayout ?: return
-        val symbolBar = mEditorSymbolBar ?: return
-        // 每次进入编辑器默认隐藏终端，仅在配置变更（如旋转屏幕）时恢复状态
-        val restoredVisible = savedInstanceState?.getBoolean(EDITOR_STATE_TERMINAL_VISIBLE, false) == true
+        val extraKeysView = findViewById<ExtraKeysView>(R.id.editor_terminal_extra_keys) ?: return
+        if (mEditorContentLayout == null || mEditorSymbolBar == null) return
+
+        val restoredTerminalOpen = savedInstanceState?.getBoolean(
+            EditorBottomDockPanel.STATE_TERMINAL_OPEN,
+            savedInstanceState?.getBoolean(EDITOR_STATE_TERMINAL_VISIBLE, false) == true
+        ) == true
+        val restoredX11Open = savedInstanceState?.getBoolean(EditorBottomDockPanel.STATE_X11_OPEN, false) == true
+        val restoredDockPanelVisible = savedInstanceState?.getBoolean(
+            EditorBottomDockPanel.STATE_DOCK_PANEL_VISIBLE,
+            savedInstanceState?.getBoolean(EDITOR_STATE_TERMINAL_VISIBLE, false) == true
+        ) == true
+        val restoredTabName = savedInstanceState?.getString(EditorBottomDockPanel.STATE_TAB)
+        val restoredTab = when (restoredTabName) {
+            EditorBottomDockPanel.Tab.X11.name -> EditorBottomDockPanel.Tab.X11
+            else -> EditorBottomDockPanel.Tab.TERMINAL
+        }
+
         editorTerminalPanel = EditorTerminalPanel(
             activity = this,
-            panelView = panel,
+            panelView = terminalSection,
             terminalView = terminalView,
             inputView = inputView,
-            contentLayout = contentLayout,
-            symbolBar = symbolBar,
+            extraKeysView = extraKeysView,
             onBlurEditor = { blurEditorForTerminal() },
-            onRestoreEditorFocus = { restoreEditorFocusAfterTerminal() }
-        ) { visible -> updateTerminalToolbarState(visible) }
-        val resizeHandle = findViewById<View>(R.id.editor_terminal_resize_handle) ?: return
-        editorTerminalPanel?.init(restoredVisible, resizeHandle)
-        findViewById<View>(R.id.editor_terminal_hide)?.setOnClickListener {
-            editorTerminalPanel?.setVisible(false)
+            onRestoreEditorFocus = { restoreEditorFocusAfterTerminal() },
+            onLayoutChanged = { updateEditorContentAnchor() }
+        ) { updateDockToolbarState() }
+        editorTerminalPanel?.init(false, null)
+
+        val surface = findViewById<android.widget.FrameLayout>(R.id.editor_x11_surface) ?: return
+        val setupPanel = findViewById<View>(R.id.editor_x11_setup_panel) ?: return
+        val setupMessage = findViewById<TextView>(R.id.editor_x11_setup_message) ?: return
+        val setupAction = findViewById<TextView>(R.id.editor_x11_setup_action) ?: return
+        val status = findViewById<TextView>(R.id.editor_x11_status) ?: return
+        val displayBtn = findViewById<TextView>(R.id.editor_x11_display)
+        val connectBtn = findViewById<TextView>(R.id.editor_x11_connect)
+        val maximize = findViewById<android.widget.ImageView>(R.id.editor_x11_maximize) ?: return
+        val vncExtraKeysView = findViewById<com.termux.shared.termux.extrakeys.ExtraKeysView>(
+            R.id.editor_vnc_extra_keys
+        )
+        vncExtraKeysView?.visibility = View.GONE
+
+        editorX11Panel = EditorX11Panel(
+            activity = this,
+            surfaceContainer = surface,
+            setupPanel = setupPanel,
+            setupMessageView = setupMessage,
+            setupActionView = setupAction,
+            statusView = status,
+            displayButton = displayBtn,
+            connectButton = connectBtn,
+            maximizeButton = maximize,
+            codeEditor = code_editor,
+            dockHeightController = editorDockHeightBridge,
+            onWriteTerminal = { command -> editorTerminalPanel?.writeCommandHidden(command) },
+            onEnsureTerminal = {
+                editorTerminalPanel?.prepareBackgroundSession(resolveTerminalDirectory(null))
+            },
+            isShellX11Ready = {
+                editorTerminalPanel?.getRecentTerminalText()
+                    ?.contains(EditorX11Environment.X11_READY_MARKER) == true
+            },
+            onLayoutChanged = { updateEditorContentAnchor() },
+            onTabActiveChanged = { updateEditorX11ButtonState() },
+            onBarActionsChanged = { editorBottomDock?.refreshBarActions() }
+        ).also { it.init() }
+
+        programRunner?.setCommandSink { command ->
+            editorTerminalPanel?.enqueueTerminalCommand(command)
         }
+
+        val terminalPanel = editorTerminalPanel ?: return
+        val x11Panel = editorX11Panel ?: return
+        editorBottomDock = EditorBottomDockPanel(
+            activity = this,
+            dockView = dockView,
+            terminalTabChip = findViewById(R.id.editor_dock_terminal_tab_chip) ?: return,
+            tabTerminal = findViewById(R.id.editor_dock_tab_terminal) ?: return,
+            closeTerminal = findViewById(R.id.editor_dock_close_terminal) ?: return,
+            x11TabChip = findViewById(R.id.editor_dock_x11_tab_chip) ?: return,
+            tabX11 = findViewById(R.id.editor_dock_tab_x11) ?: return,
+            closeX11 = findViewById(R.id.editor_dock_close_x11) ?: return,
+            tabSpacer = findViewById(R.id.editor_dock_tab_spacer) ?: return,
+            ctrlCButton = findViewById(R.id.editor_terminal_ctrl_c) ?: return,
+            x11StatusView = status,
+            x11MaximizeButton = maximize,
+            hideDockButton = findViewById(R.id.editor_dock_hide) ?: return,
+            terminalSection = terminalSection,
+            x11Section = x11Section,
+            terminalPanel = terminalPanel,
+            x11Panel = x11Panel,
+            onLayoutChanged = { updateEditorContentAnchor() },
+            onDockVisibilityChanged = { updateDockToolbarState() },
+            onOpenTerminalAtDirectory = { ensureTerminalSessionForDock() }
+        ).also {
+            it.init(restoredTerminalOpen, restoredX11Open, restoredDockPanelVisible, restoredTab)
+        }
+        updateEditorX11ButtonVisibility()
+        updateEditorContentAnchor()
+    }
+
+    private fun ensureTerminalSessionForDock() {
+        val directory = resolveTerminalDirectory(null)
+        if (directory == null) {
+            UUtils.showMsg(getString(R.string.editor_sidebar_project_dir_invalid))
+            editorBottomDock?.onTerminalSessionFailed()
+            return
+        }
+        if (programRunner?.canUseTerminal() != true) {
+            UUtils.showMsg(getString(R.string.editor_java_terminal_unavailable))
+            editorBottomDock?.onTerminalSessionFailed()
+            return
+        }
+        editorTerminalPanel?.setVisible(true, directory)
+    }
+
+    private fun updateDockToolbarState() {
+        val dock = editorBottomDock
+        val terminalHighlighted = dock != null && dock.isTerminalOpen() &&
+            (dock.isTerminalTabActive() ||
+                (!dock.isVisible() && dock.getActiveTab() == EditorBottomDockPanel.Tab.TERMINAL))
+        updateTerminalToolbarState(terminalHighlighted)
+        updateEditorX11ButtonState()
+    }
+
+    private fun updateEditorContentAnchor() {
+        val content = mEditorContentLayout ?: return
+        val dockView = mEditorBottomDockView ?: return
+        val dockVisible = editorBottomDock?.isVisible() == true
+        val x11Maximized = editorBottomDock?.isX11Maximized() == true
+
+        content.visibility = if (x11Maximized) View.GONE else View.VISIBLE
+
+        val contentParams = content.layoutParams as? RelativeLayout.LayoutParams ?: return
+        contentParams.removeRule(RelativeLayout.ABOVE)
+        if (!x11Maximized) {
+            val anchorId = if (dockVisible) {
+                R.id.editor_bottom_dock
+            } else {
+                R.id.editor_symbol_bar
+            }
+            contentParams.addRule(RelativeLayout.ABOVE, anchorId)
+        }
+        content.layoutParams = contentParams
+
+        val dockParams = dockView.layoutParams as? RelativeLayout.LayoutParams ?: return
+        dockParams.removeRule(RelativeLayout.ABOVE)
+        dockParams.removeRule(RelativeLayout.ALIGN_PARENT_BOTTOM)
+        dockParams.removeRule(RelativeLayout.BELOW)
+        if (!dockVisible) {
+            dockParams.addRule(RelativeLayout.ALIGN_PARENT_BOTTOM)
+        } else if (x11Maximized) {
+            dockParams.addRule(RelativeLayout.BELOW, R.id.editor_tab_bar)
+            dockParams.addRule(RelativeLayout.ALIGN_PARENT_BOTTOM)
+            dockParams.height = RelativeLayout.LayoutParams.MATCH_PARENT
+        } else {
+            dockParams.addRule(RelativeLayout.ALIGN_PARENT_BOTTOM)
+        }
+        dockView.layoutParams = dockParams
+
+        mEditorSymbolBar?.visibility = if (dockVisible) View.GONE else View.VISIBLE
+        updateDockToolbarState()
+        editorBottomDock?.onHostLayoutChanged()
+    }
+
+    private fun updateEditorX11ButtonVisibility() {
+        mEditorX11Button?.visibility = View.VISIBLE
+        updateEditorX11ButtonState()
+    }
+
+    private fun updateEditorX11ButtonState() {
+        val dock = editorBottomDock
+        val highlighted = dock != null && dock.isX11Open() &&
+            (dock.isX11TabActive() ||
+                (!dock.isVisible() && dock.getActiveTab() == EditorBottomDockPanel.Tab.X11))
+        mEditorX11Button?.alpha = if (highlighted) 1f else 0.7f
     }
 
     private fun updateTerminalToolbarState(visible: Boolean) {
         mEditorTerminalButton?.alpha = if (visible) 1f else 0.65f
-        mEditorSymbolBar?.visibility = if (visible) View.GONE else View.VISIBLE
     }
 
     private fun blurEditorForTerminal() {
@@ -546,86 +786,90 @@ class EditTextActivity : AppCompatActivity() {
         currentFocus?.clearFocus()
     }
 
+    private fun resolveTerminalDirectory(target: File? = null): File? {
+        target?.let { file ->
+            if (file.isDirectory) return file
+            return file.parentFile?.takeIf { it.isDirectory }
+        }
+        currentFile?.parentFile?.takeIf { it.isDirectory }?.let { return it }
+        fileTreeCurrentDir?.takeIf { it.isDirectory }?.let { return it }
+        fileTreeRoot?.takeIf { it.isDirectory }?.let { return it }
+        return null
+    }
+
+    private fun openTerminalAtDirectory(target: File?) {
+        val directory = resolveTerminalDirectory(target)
+        if (directory == null) {
+            UUtils.showMsg(getString(R.string.editor_sidebar_project_dir_invalid))
+            return
+        }
+        if (editorBottomDock == null) {
+            UUtils.showMsg(getString(R.string.editor_java_terminal_unavailable))
+            return
+        }
+        if (programRunner?.canUseTerminal() != true) {
+            UUtils.showMsg(getString(R.string.editor_java_terminal_unavailable))
+            return
+        }
+        editorBottomDock?.showTerminalAtDirectory(directory)
+    }
+
     private fun restoreEditorFocusAfterTerminal() {
         findViewById<EditorTerminalInputView>(R.id.editor_terminal_input)?.clearFocus()
         code_editor?.setSoftKeyboardEnabled(true)
         code_editor?.requestFocus()
     }
 
-    private fun onRunProgramClicked() {
+    private fun onRunBuildScriptClicked() {
         if (isProgramRunInProgress) return
         val runner = programRunner ?: return
-        val file = currentFile ?: return
-        val content = code_editor?.text?.toString().orEmpty()
-        val language = EditorRunDetector.detect(file.name, content) ?: return
+        val directory = resolveTerminalDirectory(null) ?: return
         if (!runner.canUseTerminal()) {
             UUtils.showMsg(getString(R.string.editor_java_terminal_unavailable))
             return
         }
-        setRunLoading(true)
-        editorTerminalPanel?.setVisible(true)
-        lifecycleScope.launch(Dispatchers.IO) {
-            val runtimeInstalled = runner.isRuntimeInstalled(language)
-            withContext(Dispatchers.Main) {
-                if (!runtimeInstalled) {
-                    setRunLoading(false)
-                    showInstallRuntimeDialog(runner, language)
-                } else {
-                    runProgramWithRuntime(runner, language, file, content)
-                }
-            }
-        }
-    }
-
-    private fun showInstallRuntimeDialog(runner: EditorProgramRunner, language: EditorRunLanguage) {
-        val titleRes: Int
-        val messageRes: Int
-        when (language) {
-            EditorRunLanguage.JAVA -> {
-                titleRes = R.string.editor_java_install_jdk_title
-                messageRes = R.string.editor_java_install_jdk_message
-            }
-            EditorRunLanguage.C -> {
-                titleRes = R.string.editor_run_install_c_title
-                messageRes = R.string.editor_run_install_c_message
-            }
-            EditorRunLanguage.PYTHON -> {
-                titleRes = R.string.editor_run_install_python_title
-                messageRes = R.string.editor_run_install_python_message
-            }
-            EditorRunLanguage.PHP -> {
-                titleRes = R.string.editor_run_install_php_title
-                messageRes = R.string.editor_run_install_php_message
-            }
-            EditorRunLanguage.NODE -> {
-                titleRes = R.string.editor_run_install_node_title
-                messageRes = R.string.editor_run_install_node_message
-            }
-        }
-        AlertDialog.Builder(this)
-            .setTitle(titleRes)
-            .setMessage(messageRes)
-            .setPositiveButton(R.string.editor_java_install_jdk_confirm) { _, _ ->
-                runner.installRuntimeViaTerminal(language) { }
-            }
-            .setNegativeButton(android.R.string.cancel, null)
-            .show()
-    }
-
-    private fun runProgramWithRuntime(
-        runner: EditorProgramRunner,
-        language: EditorRunLanguage,
-        file: File,
-        content: String
-    ) {
-        if (!saveCurrentFileForRun()) {
-            setRunLoading(false)
-            UUtils.showMsg(getString(R.string.editor_java_save_failed))
+        val tab = currentTab()
+        if (tab != null && (tab.previewOnly || isTextPreviewMode(tab))) {
+            UUtils.showMsg(getString(R.string.editor_file_not_text))
             return
         }
-        runner.runProgram(language, file, content)
-        setRunLoading(false)
-        updateRunButton()
+        setRunLoading(true)
+        saveCurrentTabSilentlyIfNeeded()
+        val contextFile = currentFile
+        val content = code_editor?.text?.toString().orEmpty()
+        EditorBuildScriptHelper.ensureScript(this, directory, contextFile, content)
+        refreshFileTree()
+        updateSidebarProjectPath()
+        val dock = editorBottomDock
+        if (dock != null) {
+            val isGuiRun = contextFile != null &&
+                EditorRunLanguage.JAVA.matchesExtension(contextFile.name) &&
+                EditorRunDetector.isJavaGuiSource(content)
+            dock.openGuiThenRun(directory) {
+                runner.runBuildScript(directory)
+                if (isGuiRun) {
+                    dock.openX11Tab()
+                    editorX11Panel?.onGuiAppStarted()
+                } else {
+                    dock.openTerminalTab()
+                }
+                setRunLoading(false)
+            }
+        } else {
+            runner.runBuildScript(directory)
+            setRunLoading(false)
+        }
+    }
+
+    private fun onOpenBuildScriptClicked() {
+        val directory = resolveTerminalDirectory(null) ?: return
+        saveCurrentTabSilentlyIfNeeded()
+        val contextFile = currentFile
+        val content = code_editor?.text?.toString().orEmpty()
+        val script = EditorBuildScriptHelper.ensureScript(this, directory, contextFile, content)
+        refreshFileTree()
+        updateSidebarProjectPath()
+        loadFile(script)
     }
 
     private fun saveCurrentFileForRun(): Boolean {
@@ -651,15 +895,14 @@ class EditTextActivity : AppCompatActivity() {
         updateRunButton()
     }
 
-    private fun updateRunButton() {
-        val file = currentFile
+    private fun canShowRunButton(): Boolean {
         val tab = currentTab()
-        val content = code_editor?.text?.toString().orEmpty()
-        val canRun = file != null
-            && tab != null
-            && !tab.previewOnly
-            && !isTextPreviewMode(tab)
-            && EditorRunDetector.detect(file.name, content) != null
+        if (tab != null && (tab.previewOnly || isTextPreviewMode(tab))) return false
+        return resolveTerminalDirectory(null) != null
+    }
+
+    private fun updateRunButton() {
+        val canRun = canShowRunButton()
         if (!canRun) {
             mEditorRunButton?.visibility = View.GONE
             mEditorRunLoading?.visibility = View.GONE
@@ -709,7 +952,7 @@ class EditTextActivity : AppCompatActivity() {
             return
         }
         setAndroidBuildLoading(true)
-        editorTerminalPanel?.setVisible(true)
+        resolveTerminalDirectory(currentFile)?.let { editorBottomDock?.showTerminalAtDirectory(it) }
         lifecycleScope.launch(Dispatchers.IO) {
             val envReady = runner.isGradleEnvInstalled()
             withContext(Dispatchers.Main) {
@@ -728,7 +971,7 @@ class EditTextActivity : AppCompatActivity() {
             .setTitle(R.string.editor_android_install_gradle_title)
             .setMessage(R.string.editor_android_install_gradle_message)
             .setPositiveButton(R.string.editor_android_install_gradle_confirm) { _, _ ->
-                editorTerminalPanel?.setVisible(true)
+                resolveTerminalDirectory(currentFile)?.let { editorBottomDock?.showTerminalAtDirectory(it) }
                 runner.installGradleEnvViaTerminal { }
             }
             .setNegativeButton(android.R.string.cancel, null)
@@ -791,7 +1034,7 @@ class EditTextActivity : AppCompatActivity() {
             .setTitle(R.string.editor_android_install_gradle_title)
             .setMessage(R.string.editor_android_install_gradle_message)
             .setPositiveButton(R.string.editor_android_install_gradle_confirm) { _, _ ->
-                editorTerminalPanel?.setVisible(true)
+                resolveTerminalDirectory(currentFile)?.let { editorBottomDock?.showTerminalAtDirectory(it) }
                 runner.installGradleEnvViaTerminal { }
             }
             .setNegativeButton(android.R.string.cancel, null)
@@ -1002,6 +1245,29 @@ class EditTextActivity : AppCompatActivity() {
             }
             setOnClickListener { showLspServersDialog() }
         }
+        val editorAiResetButton = TextView(this).apply {
+            text = getString(R.string.zt_editor_ai_reset_title)
+            setTextColor(0xffd4d4d4.toInt())
+            textSize = 14f
+            gravity = android.view.Gravity.CENTER_VERTICAL
+            setPadding(dp(14), 0, dp(14), 0)
+            setBackgroundResource(R.drawable.shape_editor_symbol_key)
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                dp(40)
+            ).apply {
+                setMargins(0, dp(8), 0, 0)
+            }
+            setOnClickListener {
+                ZtEditorAiResetHelper.showResetConfirmDialog(this@EditTextActivity)
+            }
+        }
+        val editorAiResetSummary = TextView(this).apply {
+            text = getString(R.string.zt_editor_ai_reset_summary)
+            setTextColor(0xff9d9d9d.toInt())
+            textSize = 12f
+            setPadding(0, 0, 0, dp(6))
+        }
         val container = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(28), dp(14), dp(28), 0)
@@ -1020,6 +1286,9 @@ class EditTextActivity : AppCompatActivity() {
             addView(lspTimeoutInput)
             addView(lspDescLabel)
             addView(lspManageButton)
+            addView(buildSettingsLabel(getString(R.string.zt_editor_ai_button)))
+            addView(editorAiResetSummary)
+            addView(editorAiResetButton)
         }
         val scrollView = ScrollView(this).apply {
             addView(container)
@@ -1982,13 +2251,33 @@ class EditTextActivity : AppCompatActivity() {
         outState.putBoolean(EDITOR_STATE_SIDEBAR_MATCH_CASE, isMatchCase)
         outState.putBoolean(
             EDITOR_STATE_TERMINAL_VISIBLE,
-            editorTerminalPanel?.isVisible() == true
+            editorBottomDock?.isVisible() == true
+        )
+        outState.putBoolean(
+            EditorBottomDockPanel.STATE_DOCK_PANEL_VISIBLE,
+            editorBottomDock?.isVisible() == true
+        )
+        outState.putBoolean(
+            EditorBottomDockPanel.STATE_TERMINAL_OPEN,
+            editorBottomDock?.isTerminalOpen() == true
+        )
+        outState.putBoolean(
+            EditorBottomDockPanel.STATE_X11_OPEN,
+            editorBottomDock?.isX11Open() == true
+        )
+        outState.putString(
+            EditorBottomDockPanel.STATE_TAB,
+            editorBottomDock?.getActiveTab()?.name
         )
     }
 
     override fun onBackPressed() {
+        if (editorBottomDock?.handleBackPressed() == true) {
+            updateEditorX11ButtonState()
+            return
+        }
         val terminalView = findViewById<TerminalView>(R.id.editor_terminal_view)
-        if (editorTerminalPanel?.isVisible() == true && terminalView?.isSelectingText == true) {
+        if (editorBottomDock?.isTerminalTabActive() == true && terminalView?.isSelectingText == true) {
             terminalView.stopTextSelectionMode()
             return
         }
@@ -1998,7 +2287,7 @@ class EditTextActivity : AppCompatActivity() {
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
         val inputView = findViewById<EditorTerminalInputView>(R.id.editor_terminal_input)
         val terminalView = findViewById<TerminalView>(R.id.editor_terminal_view)
-        if (editorTerminalPanel?.isVisible() == true && inputView != null && inputView.hasFocus()) {
+        if (editorBottomDock?.isTerminalTabActive() == true && inputView != null && inputView.hasFocus()) {
             val session = terminalView?.currentSession
             if (session != null && event.action == KeyEvent.ACTION_DOWN) {
                 when (event.keyCode) {
@@ -2017,6 +2306,26 @@ class EditTextActivity : AppCompatActivity() {
             if (terminalView != null && terminalView.dispatchKeyEvent(event)) {
                 return true
             }
+            if (session != null && event.action == KeyEvent.ACTION_DOWN) {
+                when (event.keyCode) {
+                    in KeyEvent.KEYCODE_0..KeyEvent.KEYCODE_9 -> {
+                        session.write((event.keyCode - KeyEvent.KEYCODE_0 + '0'.code).toChar().toString())
+                        terminalView?.onScreenUpdated()
+                        return true
+                    }
+                    in KeyEvent.KEYCODE_NUMPAD_0..KeyEvent.KEYCODE_NUMPAD_9 -> {
+                        session.write((event.keyCode - KeyEvent.KEYCODE_NUMPAD_0 + '0'.code).toChar().toString())
+                        terminalView?.onScreenUpdated()
+                        return true
+                    }
+                }
+                val unicode = event.unicodeChar
+                if (unicode != 0) {
+                    session.write(String(Character.toChars(unicode)))
+                    terminalView?.onScreenUpdated()
+                    return true
+                }
+            }
         }
         return super.dispatchKeyEvent(event)
     }
@@ -2031,16 +2340,40 @@ class EditTextActivity : AppCompatActivity() {
     override fun onResume() {
         super.onResume()
         editorTerminalPanel?.onResume()
+        editorX11Panel?.onResume()
+        updateEditorX11ButtonState()
+    }
+
+    override fun onPause() {
+        editorX11Panel?.onPause()
+        super.onPause()
+    }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        editorX11Panel?.onWindowFocusChanged(hasFocus)
+    }
+
+    override fun onConfigurationChanged(newConfig: android.content.res.Configuration) {
+        super.onConfigurationChanged(newConfig)
+        editorX11Panel?.onConfigurationChanged(newConfig)
+        updateEditorContentAnchor()
+        editorBottomDock?.onHostLayoutChanged()
     }
 
     override fun onDestroy() {
         dirtyCheckHandler.removeCallbacks(dirtyCheckRunnable)
         stopLspInstallRefresh()
+        editorBottomDock = null
         sidebarAnimator?.cancel()
         cancelSidebarGesture()
         shutdownLspManager()
+        editorX11Panel?.onDestroy()
+        editorX11Panel = null
         editorTerminalPanel?.destroy()
         editorTerminalPanel = null
+        editorAiPanel?.destroy()
+        editorAiPanel = null
         super.onDestroy()
     }
 
@@ -2103,7 +2436,7 @@ class EditTextActivity : AppCompatActivity() {
             mEditorToolbar,
             mEditorTabBar,
             mEditorContentLayout,
-            mEditorTerminalPanelView,
+            mEditorBottomDockView,
             mEditorSymbolBar
         ).forEach { view ->
             (view?.layoutParams as? RelativeLayout.LayoutParams)?.apply {
@@ -2113,7 +2446,7 @@ class EditTextActivity : AppCompatActivity() {
                 }
             }
         }
-        editorTerminalPanel?.onHostLayoutChanged()
+        editorBottomDock?.onHostLayoutChanged()
     }
 
     private fun finishSidebarState(visible: Boolean) {
@@ -2663,16 +2996,18 @@ class EditTextActivity : AppCompatActivity() {
     private fun showFileTreeItemMenu(node: FileTreeNode, anchor: View) {
         PopupMenu(this, anchor).apply {
             if (node.kind == FileTreeEntryKind.NORMAL) {
-                menu.add(0, 10, 0, getString(R.string.editor_sidebar_copy))
-                menu.add(0, 11, 1, getString(R.string.editor_sidebar_cut))
-                menu.add(0, 13, 2, getString(R.string.editor_sidebar_delete))
+                menu.add(0, 14, 0, getString(R.string.editor_sidebar_open_terminal))
+                menu.add(0, 10, 1, getString(R.string.editor_sidebar_copy))
+                menu.add(0, 11, 2, getString(R.string.editor_sidebar_cut))
+                menu.add(0, 13, 3, getString(R.string.editor_sidebar_delete))
             }
             if (EditorFileTreeClipboard.hasContent()) {
-                menu.add(0, 12, 3, getString(R.string.editor_sidebar_paste))
+                menu.add(0, 12, 4, getString(R.string.editor_sidebar_paste))
             }
             if (menu.size() == 0) return
             setOnMenuItemClickListener { item ->
                 when (item.itemId) {
+                    14 -> openTerminalAtDirectory(node.file)
                     10 -> copyFileTreeEntry(node.file)
                     11 -> cutFileTreeEntry(node.file)
                     12 -> pasteFileTreeEntry(resolvePasteTargetDir(node))
@@ -3377,5 +3712,343 @@ class EditTextActivity : AppCompatActivity() {
         }
 
        /* binding.positionDisplay.text = text*/
+    }
+
+    override fun isEditorReady(): Boolean {
+        val tab = currentTab() ?: return false
+        return code_editor != null && !tab.previewOnly && !isTextPreviewMode(tab)
+    }
+
+    override fun captureSnapshot(maxChars: Int): String {
+        val editor = code_editor ?: return "Error: editor unavailable"
+        val tab = currentTab() ?: return "Error: no file open"
+        if (tab.previewOnly || isTextPreviewMode(tab)) {
+            return "Error: preview mode, editing disabled"
+        }
+        val full = editor.text.toString()
+        val cursor = editor.cursor
+        val limit = maxChars.coerceAtLeast(500)
+        val sb = StringBuilder()
+        sb.append("=== 编辑器快照 ===\n")
+        sb.append("当前文件: ").append(tab.file.absolutePath).append('\n')
+        if (editorTabs.size > 1) {
+            sb.append("已打开: ")
+            editorTabs.joinToString(", ") { t ->
+                val name = t.file.name
+                when {
+                    t.file.absolutePath == tab.file.absolutePath -> "$name*"
+                    t.dirty -> "$name(未保存)"
+                    else -> name
+                }
+            }.let { sb.append(it).append('\n') }
+        }
+        sb.append("光标: 行").append(cursor.leftLine + 1)
+            .append(" 列").append(cursor.leftColumn)
+            .append(" 偏移").append(cursor.left).append('\n')
+        if (cursor.isSelected) {
+            sb.append("选区: ").append(cursor.left).append("..").append(cursor.right)
+                .append(" (").append(cursor.right - cursor.left).append(" chars)\n")
+        }
+        sb.append("长度: ").append(full.length).append('\n')
+        appendDockSnapshot(sb)
+        sb.append("--- 内容 ---\n")
+        if (full.length > limit) {
+            sb.append(full, 0, limit).append("\n...[truncated, total ").append(full.length).append(" chars]")
+        } else {
+            sb.append(full)
+        }
+        return sb.toString()
+    }
+
+    override fun insertAtCursor(text: String): String {
+        val editor = code_editor ?: return "Error: editor unavailable"
+        if (!isEditorReady()) return getString(R.string.zt_editor_ai_unavailable)
+        val cursor = editor.cursor
+        editor.text.replace(
+            cursor.leftLine,
+            cursor.leftColumn,
+            cursor.rightLine,
+            cursor.rightColumn,
+            text
+        )
+        updateDirtyState()
+        return "Inserted ${text.length} chars at offset ${cursor.left}"
+    }
+
+    override fun replaceRange(start: Int, end: Int, text: String): String {
+        val editor = code_editor ?: return "Error: editor unavailable"
+        if (!isEditorReady()) return getString(R.string.zt_editor_ai_unavailable)
+        val full = editor.text.toString()
+        if (start < 0 || end < start || end > full.length) {
+            return "Error: invalid range $start..$end (length ${full.length})"
+        }
+        val lineStarts = buildLineStarts(full)
+        val startPos = offsetToLineColumn(lineStarts, start)
+        val endPos = offsetToLineColumn(lineStarts, end)
+        val content = editor.text
+        content.replace(startPos.first, startPos.second, endPos.first, endPos.second, text)
+        updateDirtyState()
+        return "Replaced $start..$end with ${text.length} chars"
+    }
+
+    override fun replaceAll(text: String): String {
+        val editor = code_editor ?: return "Error: editor unavailable"
+        if (!isEditorReady()) return getString(R.string.zt_editor_ai_unavailable)
+        editor.setText(text)
+        updateDirtyState()
+        return "Replaced entire content (${text.length} chars)"
+    }
+
+    private fun resolveEditorPath(rawPath: String): File? {
+        val trimmed = rawPath.trim()
+        if (trimmed.isEmpty()) return null
+        return if (File(trimmed).isAbsolute) {
+            File(trimmed).normalize()
+        } else {
+            val base = currentFile?.parentFile ?: fileTreeCurrentDir ?: fileTreeRoot ?: return null
+            File(base, trimmed).normalize()
+        }
+    }
+
+    private fun saveCurrentTabSilentlyIfNeeded() {
+        storeCurrentTabState()
+        val file = currentFile ?: return
+        val tab = currentTab() ?: return
+        if (tab.previewOnly || isTextPreviewMode(tab) || !tab.dirty) return
+        val content = tab.content
+        if (UUtils.setFileString(file, content)) {
+            tab.savedContent = content
+            tab.dirty = false
+            isDirty = false
+            renderEditorTabs()
+        }
+    }
+
+    override fun createEditorFile(path: String, content: String, open: Boolean): String {
+        val target = resolveEditorPath(path) ?: return "Error: invalid path"
+        if (target.name.isEmpty()) return "Error: invalid file name"
+        if (target.exists()) {
+            return "Error: file already exists: ${target.absolutePath}. Use open_file instead."
+        }
+        val parent = target.parentFile
+        if (parent != null && !parent.exists() && !parent.mkdirs()) {
+            return "Error: failed to create directory ${parent.absolutePath}"
+        }
+        if (!runCatching { target.createNewFile() }.getOrDefault(false)) {
+            return "Error: failed to create ${target.absolutePath}"
+        }
+        if (!UUtils.setFileString(target, content)) {
+            target.delete()
+            return "Error: failed to write ${target.absolutePath}"
+        }
+        refreshFileTree()
+        updateSidebarProjectPath()
+        if (!canOpenFile(target)) {
+            return "Created ${target.absolutePath} (${content.length} chars), not editable in editor"
+        }
+        if (open) {
+            saveCurrentTabSilentlyIfNeeded()
+            loadFile(target)
+            return "Created and opened ${target.absolutePath} (${content.length} chars)"
+        }
+        return "Created ${target.absolutePath} (${content.length} chars)"
+    }
+
+    override fun openEditorFile(path: String): String {
+        val target = resolveEditorPath(path) ?: return "Error: invalid path"
+        if (!target.exists()) return "Error: file not found: ${target.absolutePath}"
+        if (!target.isFile) return "Error: not a file: ${target.absolutePath}"
+        if (!canOpenFile(target)) return "Error: cannot open in text editor: ${target.absolutePath}"
+        val previous = currentFile?.absolutePath
+        saveCurrentTabSilentlyIfNeeded()
+        loadFile(target)
+        return buildString {
+            append("Opened ${target.absolutePath}")
+            if (previous != null && previous != target.absolutePath) {
+                append(" (previous: $previous)")
+            }
+        }
+    }
+
+    override fun saveCurrentEditorFile(): String {
+        storeCurrentTabState()
+        val file = currentFile ?: return "Error: no file open"
+        val tab = currentTab() ?: return "Error: no active tab"
+        if (tab.previewOnly || isTextPreviewMode(tab)) {
+            return "Error: preview tab cannot be saved"
+        }
+        val content = tab.content
+        if (!UUtils.setFileString(file, content)) {
+            return "Error: failed to save ${file.absolutePath}"
+        }
+        tab.savedContent = content
+        tab.dirty = false
+        isDirty = false
+        renderEditorTabs()
+        return "Saved ${file.absolutePath} (${content.length} chars)"
+    }
+
+    override fun listOpenEditorFiles(): String {
+        if (editorTabs.isEmpty()) return "No files open"
+        val current = currentFile?.absolutePath
+        val sb = StringBuilder("Open editor tabs:\n")
+        for (tab in editorTabs) {
+            sb.append(if (tab.file.absolutePath == current) "• [active] " else "  ")
+                .append(tab.file.absolutePath)
+            if (tab.dirty) sb.append(" (unsaved)")
+            if (tab.previewOnly) sb.append(" (preview-only)")
+            sb.append('\n')
+        }
+        val base = currentFile?.parentFile?.absolutePath
+            ?: fileTreeCurrentDir?.absolutePath
+            ?: fileTreeRoot?.absolutePath
+        if (base != null) {
+            sb.append("Relative path base: ").append(base)
+        }
+        return sb.toString().trimEnd()
+    }
+
+    override fun releaseEditorInputForAiPanel() {
+        code_editor?.let { editor ->
+            editor.setSoftKeyboardEnabled(false)
+            KeyboardUtils.hideSoftKeyboard(this, editor)
+            editor.clearFocus()
+        }
+        currentFocus?.takeIf { it.id != R.id.editor_ai_panel_input }?.clearFocus()
+    }
+
+    override fun restoreEditorInputAfterAiPanel() {
+        code_editor?.setSoftKeyboardEnabled(true)
+    }
+
+    override fun isTerminalAvailable(): Boolean {
+        return editorTerminalPanel != null
+    }
+
+    override fun captureTerminalSnapshot(maxChars: Int): String {
+        val panel = editorTerminalPanel
+            ?: return getString(R.string.zt_editor_ai_terminal_unavailable)
+        return runTerminalOnUiForResult {
+            panel.ensureSessionForAi(resolveTerminalDirectory(currentFile))
+            panel.captureAiSnapshot(maxChars)
+        }
+    }
+
+    override fun sendTerminalText(text: String) {
+        editorTerminalPanel?.let { panel ->
+            runTerminalOnUiAction {
+                panel.ensureSessionForAi(resolveTerminalDirectory(currentFile))
+                panel.sendTextToTerminal(text)
+            }
+        }
+    }
+
+    override fun sendTerminalKey(key: String) {
+        editorTerminalPanel?.let { panel ->
+            runTerminalOnUiAction {
+                panel.ensureSessionForAi(resolveTerminalDirectory(currentFile))
+                panel.sendTerminalKey(key)
+            }
+        }
+    }
+
+    override fun runBuildScriptForAi(): String {
+        if (isProgramRunInProgress) {
+            return getString(R.string.zt_editor_ai_build_in_progress)
+        }
+        val runner = programRunner ?: return getString(R.string.zt_editor_ai_build_unavailable)
+        if (resolveTerminalDirectory(null) == null) {
+            return getString(R.string.zt_editor_ai_build_no_directory)
+        }
+        if (!runner.canUseTerminal()) {
+            return getString(R.string.zt_editor_ai_terminal_unavailable)
+        }
+        val tab = currentTab()
+        if (tab != null && (tab.previewOnly || isTextPreviewMode(tab))) {
+            return getString(R.string.zt_editor_ai_unavailable)
+        }
+        val contextFile = currentFile
+        val content = code_editor?.text?.toString().orEmpty()
+        val isGuiRun = contextFile != null &&
+            EditorRunLanguage.JAVA.matchesExtension(contextFile.name) &&
+            EditorRunDetector.isJavaGuiSource(content)
+        onRunBuildScriptClicked()
+        return if (isGuiRun) {
+            getString(R.string.zt_editor_ai_build_started_gui)
+        } else {
+            getString(R.string.zt_editor_ai_build_started)
+        }
+    }
+
+    override fun switchEditorDockTab(tab: String): String {
+        val dock = editorBottomDock
+            ?: return getString(R.string.zt_editor_ai_dock_unavailable)
+        return when (tab.trim().lowercase(Locale.ROOT)) {
+            "gui", "x11" -> {
+                dock.openX11Tab()
+                getString(R.string.zt_editor_ai_dock_switched_gui)
+            }
+            "terminal", "term" -> {
+                dock.openTerminalTab()
+                getString(R.string.zt_editor_ai_dock_switched_terminal)
+            }
+            else -> getString(R.string.zt_editor_ai_dock_invalid_tab)
+        }
+    }
+
+    private fun appendDockSnapshot(sb: StringBuilder) {
+        val dock = editorBottomDock ?: return
+        sb.append("底部面板: ")
+            .append(if (dock.isVisible()) "展开" else "收起")
+            .append(", 终端标签=")
+            .append(if (dock.isTerminalOpen()) "开" else "关")
+            .append(", GUI标签=")
+            .append(if (dock.isX11Open()) "开" else "关")
+            .append(", 当前=")
+            .append(
+                when (dock.getActiveTab()) {
+                    EditorBottomDockPanel.Tab.X11 -> "GUI"
+                    EditorBottomDockPanel.Tab.TERMINAL -> "terminal"
+                }
+            )
+            .append('\n')
+        sb.append("GUI说明: 内置简易 GUI (Xvfb) DISPLAY=")
+            .append(EditorX11Environment.DISPLAY)
+            .append("，无需 sway 或主界面 X11 环境\n")
+    }
+
+    private fun runTerminalOnUiForResult(block: () -> String): String {
+        if (android.os.Looper.myLooper() == android.os.Looper.getMainLooper()) {
+            return block()
+        }
+        val result = java.util.concurrent.atomic.AtomicReference<String>()
+        val latch = java.util.concurrent.CountDownLatch(1)
+        runOnUiThread {
+            try {
+                result.set(block())
+            } catch (e: Exception) {
+                result.set("Error: ${e.message ?: "terminal operation failed"}")
+            } finally {
+                latch.countDown()
+            }
+        }
+        latch.await(5, java.util.concurrent.TimeUnit.SECONDS)
+        return result.get() ?: getString(R.string.zt_editor_ai_terminal_unavailable)
+    }
+
+    private fun runTerminalOnUiAction(block: () -> Unit) {
+        if (android.os.Looper.myLooper() == android.os.Looper.getMainLooper()) {
+            block()
+            return
+        }
+        val latch = java.util.concurrent.CountDownLatch(1)
+        runOnUiThread {
+            try {
+                block()
+            } finally {
+                latch.countDown()
+            }
+        }
+        latch.await(5, java.util.concurrent.TimeUnit.SECONDS)
     }
 }

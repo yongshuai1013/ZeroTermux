@@ -9,15 +9,19 @@ import android.graphics.Typeface
 import android.os.IBinder
 import android.view.MotionEvent
 import android.view.View
-import android.widget.RelativeLayout
 import com.termux.app.TermuxService
+import com.termux.R
 import com.termux.shared.logger.Logger
 import com.termux.shared.termux.TermuxConstants
 import com.termux.shared.termux.settings.preferences.TermuxAppSharedPreferences
+import com.termux.shared.termux.settings.properties.TermuxAppSharedProperties
+import com.termux.shared.termux.extrakeys.ExtraKeysView
 import com.termux.terminal.TerminalColors
 import com.termux.terminal.TerminalSession
 import com.termux.terminal.TextStyle
 import com.termux.view.TerminalView
+import com.termux.zerocore.ai.agent.ZtTerminalAiSnapshot
+import java.io.File
 import java.io.FileInputStream
 import java.util.Properties
 
@@ -26,10 +30,10 @@ class EditorTerminalPanel(
     private val panelView: View,
     private val terminalView: TerminalView,
     private val inputView: EditorTerminalInputView,
-    private val contentLayout: RelativeLayout,
-    private val symbolBar: View,
+    private val extraKeysView: ExtraKeysView,
     private val onBlurEditor: () -> Unit,
     private val onRestoreEditorFocus: () -> Unit,
+    private val onLayoutChanged: () -> Unit,
     private val onVisibilityChanged: (Boolean) -> Unit
 ) : ServiceConnection {
 
@@ -37,21 +41,32 @@ class EditorTerminalPanel(
     private var termuxService: TermuxService? = null
     private var serviceBound = false
     private var visible = false
+    private var pendingCdDirectory: File? = null
+    private var terminalExtraKeys: EditorTerminalExtraKeys? = null
+    private val pendingCommands = ArrayDeque<String>()
+    private var drainingCommands = false
+    /** 已通过命令切换到的目录，避免 AI 每轮快照重复 cd。 */
+    private var lastEnsuredCdPath: String? = null
 
     private val viewClient = EditorTerminalViewClient(
         activity,
         terminalView,
         inputView,
+        extraKeysView,
         { visible },
         onBlurEditor
     )
 
-    fun init(restoredVisible: Boolean, resizeHandle: View) {
+    fun init(restoredVisible: Boolean, resizeHandle: View?) {
         inputView.bindTerminalView(terminalView)
-        setPanelHeight(defaultPanelHeightPx())
-        setupResizeHandle(resizeHandle)
+        inputView.bindViewClient(viewClient)
+        if (resizeHandle != null) {
+            setPanelHeight(defaultPanelHeightPx())
+            setupResizeHandle(resizeHandle)
+        }
         terminalView.setTerminalViewClient(viewClient)
         viewClient.onCreate()
+        setupExtraKeys()
         val prefs = getTermuxPrefs()
         terminalView.setTextSize(prefs?.fontSize ?: DEFAULT_TERMINAL_FONT_SIZE)
         terminalView.setKeepScreenOn(prefs?.shouldKeepScreenOn() == true)
@@ -60,6 +75,169 @@ class EditorTerminalPanel(
             setVisible(true)
         } else {
             ensureHidden()
+        }
+    }
+
+    fun sendCtrlC() {
+        android.util.Log.d(LOG_TAG, "sendCtrlC")
+        ensureServiceBound()
+        terminalView.post {
+            attachCurrentSession()
+            val session = terminalView.currentSession
+            if (session != null) {
+                session.write("\u0003")
+                terminalView.onScreenUpdated()
+            } else {
+                terminalView.sendTextToTerminalCtrl("c", true)
+                terminalView.onScreenUpdated()
+            }
+        }
+    }
+
+    fun prepareBackgroundSession(workingDirectory: File? = null) {
+        ensureServiceBound()
+        terminalView.post {
+            attachCurrentSession()
+            workingDirectory?.let { enqueueCd(it) }
+        }
+    }
+
+    /** Serializes shell input so concurrent editor commands do not interleave. */
+    fun enqueueTerminalCommand(command: String) {
+        synchronized(pendingCommands) {
+            pendingCommands.addLast(command)
+        }
+        ensureServiceBound()
+        terminalView.post { drainCommandQueue() }
+    }
+
+    fun writeCommandHidden(command: String) {
+        if (!visible) {
+            ensureServiceBound()
+        }
+        enqueueTerminalCommand(command)
+    }
+
+    private fun drainCommandQueue() {
+        if (drainingCommands) return
+        val command = synchronized(pendingCommands) {
+            pendingCommands.removeFirstOrNull()
+        } ?: return
+        drainingCommands = true
+        attachCurrentSession()
+        val session = terminalView.currentSession
+        if (session == null) {
+            synchronized(pendingCommands) {
+                pendingCommands.addFirst(command)
+            }
+            drainingCommands = false
+            terminalView.postDelayed({ drainCommandQueue() }, COMMAND_RETRY_MS)
+            return
+        }
+        session.write(command)
+        terminalView.onScreenUpdated()
+        drainingCommands = false
+        val hasMore = synchronized(pendingCommands) { pendingCommands.isNotEmpty() }
+        if (hasMore) {
+            terminalView.postDelayed({ drainCommandQueue() }, COMMAND_GAP_MS)
+        }
+    }
+
+    private fun enqueueCd(directory: File) {
+        ensureCd(directory)
+    }
+
+    /**
+     * 绑定终端会话供 AI 使用：不强制展开终端面板，且同一目录只 cd 一次。
+     */
+    fun ensureSessionForAi(workingDirectory: File? = null) {
+        ensureServiceBound()
+        attachCurrentSession()
+        workingDirectory?.let { ensureCd(it) }
+    }
+
+    fun ensureForAi(workingDirectory: File? = null) {
+        if (!visible) {
+            setVisible(true, workingDirectory)
+            return
+        }
+        ensureSessionForAi(workingDirectory)
+    }
+
+    fun getRecentTerminalText(): String {
+        return try {
+            if (terminalView.currentSession == null) {
+                return ""
+            }
+            terminalView.getVisibleTerminalText()
+        } catch (e: Exception) {
+            Logger.logStackTraceWithMessage(LOG_TAG, "getRecentTerminalText failed", e)
+            ""
+        }
+    }
+
+    fun captureAiSnapshot(maxChars: Int): String {
+        val session = terminalView.currentSession
+        if (session == null) {
+            return "(terminal session not attached)"
+        }
+        val visible = terminalView.getVisibleTerminalText().trim()
+        val full = try {
+            terminalView.getText555()?.trim().orEmpty()
+        } catch (e: Exception) {
+            visible
+        }
+        return ZtTerminalAiSnapshot.format(visible, full, maxChars)
+    }
+
+    fun sendTextToTerminal(text: String) {
+        attachCurrentSession()
+        val session = terminalView.currentSession
+        if (session != null) {
+            session.write(text)
+            terminalView.onScreenUpdated()
+            return
+        }
+        terminalView.sendTextToTerminal(text)
+        terminalView.onScreenUpdated()
+    }
+
+    fun sendTerminalKey(key: String) {
+        if (terminalView.currentSession == null) {
+            attachCurrentSession()
+        }
+        val keys = terminalExtraKeys ?: return
+        when (key.lowercase()) {
+            "enter" -> keys.dispatchKey("ENTER")
+            "tab" -> keys.dispatchKey("TAB")
+            "escape" -> keys.dispatchKey("ESC")
+            "backspace" -> keys.dispatchKey("BKSP")
+            "up" -> keys.dispatchKey("UP")
+            "down" -> keys.dispatchKey("DOWN")
+            "left" -> keys.dispatchKey("LEFT")
+            "right" -> keys.dispatchKey("RIGHT")
+            "ctrl_c" -> terminalView.sendTextToTerminalCtrl("c", true)
+            "ctrl_d" -> terminalView.sendTextToTerminalCtrl("d", true)
+            "ctrl_l" -> terminalView.sendTextToTerminalCtrl("l", true)
+            "ctrl_z" -> terminalView.sendTextToTerminalCtrl("z", true)
+            else -> throw IllegalArgumentException("unsupported key: $key")
+        }
+        terminalView.onScreenUpdated()
+    }
+
+    fun writeToSession(command: String) {
+        if (!visible) {
+            setVisible(true, null)
+        }
+        terminalView.post {
+            if (!visible) return@post
+            attachCurrentSession()
+            terminalView.postDelayed({
+                if (!visible) return@postDelayed
+                val session = terminalView.currentSession ?: return@postDelayed
+                session.write(command)
+                terminalView.onScreenUpdated()
+            }, 120)
         }
     }
 
@@ -72,12 +250,39 @@ class EditorTerminalPanel(
 
     fun isVisible(): Boolean = visible
 
-    fun toggle() {
-        setVisible(!visible)
+    fun isSessionActive(): Boolean = visible
+
+    fun setContentVisible(show: Boolean) {
+        panelView.visibility = if (show) View.VISIBLE else View.GONE
+    }
+
+    fun toggle(workingDirectory: File? = null) {
+        if (visible) {
+            setVisible(false)
+        } else {
+            setVisible(true, workingDirectory)
+        }
+    }
+
+    fun showAtDirectory(directory: File) {
+        if (!visible) {
+            setVisible(true, directory)
+        } else {
+            sendCdCommand(directory)
+        }
     }
 
     fun setVisible(show: Boolean) {
-        if (visible == show) return
+        setVisible(show, null)
+    }
+
+    fun setVisible(show: Boolean, workingDirectory: File?) {
+        if (visible == show && !(show && workingDirectory != null)) {
+            if (show && workingDirectory != null) {
+                sendCdCommand(workingDirectory)
+            }
+            return
+        }
         visible = show
         if (show) {
             onVisibilityChanged(true)
@@ -88,6 +293,7 @@ class EditorTerminalPanel(
             ensureServiceBound()
             registerRelay()
             attachCurrentSession()
+            workingDirectory?.let { scheduleCdCommand(it) }
         } else {
             unregisterRelay()
             onRestoreEditorFocus()
@@ -125,8 +331,9 @@ class EditorTerminalPanel(
 
     override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
         termuxService = TermuxService.fromBinder(service ?: return)
+        attachCurrentSession()
         if (visible) {
-            attachCurrentSession()
+            pendingCdDirectory?.let { scheduleCdCommand(it) }
         }
     }
 
@@ -160,6 +367,39 @@ class EditorTerminalPanel(
             terminalView.onScreenUpdated()
         }
         applyFontAndColors()
+    }
+
+    private fun scheduleCdCommand(directory: File) {
+        pendingCdDirectory = directory
+        terminalView.post {
+            if (!visible) return@post
+            attachCurrentSession()
+            terminalView.postDelayed({
+                if (!visible) return@postDelayed
+                sendCdCommand(directory)
+                pendingCdDirectory = null
+            }, 120)
+        }
+    }
+
+    private fun sendCdCommand(directory: File) {
+        ensureCd(directory)
+    }
+
+    private fun ensureCd(directory: File) {
+        if (!directory.isDirectory) return
+        val path = try {
+            directory.canonicalPath
+        } catch (_: Exception) {
+            directory.absolutePath
+        }
+        if (path == lastEnsuredCdPath) return
+        lastEnsuredCdPath = path
+        enqueueTerminalCommand("cd ${shellQuote(path)}\n")
+    }
+
+    private fun shellQuote(value: String): String {
+        return "'" + value.replace("'", "'\\''") + "'"
     }
 
     private fun resolveCurrentSession(service: TermuxService): TerminalSession? {
@@ -218,13 +458,34 @@ class EditorTerminalPanel(
     }
 
     private fun updateContentAnchor() {
-        val params = contentLayout.layoutParams as? RelativeLayout.LayoutParams ?: return
-        params.removeRule(RelativeLayout.ABOVE)
-        params.addRule(
-            RelativeLayout.ABOVE,
-            if (visible) panelView.id else symbolBar.id
-        )
-        contentLayout.layoutParams = params
+        onLayoutChanged()
+    }
+
+    private fun setupExtraKeys() {
+        val keys = EditorTerminalExtraKeys(activity, terminalView, extraKeysView, viewClient)
+        terminalExtraKeys = keys
+        extraKeysView.setExtraKeysViewClient(keys)
+        val properties = TermuxAppSharedProperties.getProperties()
+        extraKeysView.setButtonTextAllCaps(properties?.shouldExtraKeysTextBeAllCaps() == true)
+        reloadExtraKeys()
+    }
+
+    private fun reloadExtraKeys() {
+        val info = terminalExtraKeys?.getExtraKeysInfo() ?: run {
+            extraKeysView.visibility = View.GONE
+            return
+        }
+        val rowCount = info.matrix.size.coerceAtLeast(1)
+        val scale = TermuxAppSharedProperties.getProperties()?.terminalToolbarHeightScaleFactor ?: 1f
+        val rowHeightPx = dp(DEFAULT_EXTRA_KEYS_ROW_HEIGHT_DP)
+        val totalHeight = (rowHeightPx * rowCount * scale).toInt().coerceAtLeast(rowHeightPx)
+        val params = extraKeysView.layoutParams
+        if (params != null && params.height != totalHeight) {
+            params.height = totalHeight
+            extraKeysView.layoutParams = params
+        }
+        extraKeysView.visibility = View.VISIBLE
+        extraKeysView.reload(info, rowHeightPx.toFloat())
     }
 
     private fun applyFontAndColors() {
@@ -254,8 +515,11 @@ class EditorTerminalPanel(
     companion object {
         private const val LOG_TAG = "EditorTerminalPanel"
         private const val DEFAULT_TERMINAL_FONT_SIZE = 14
-        private const val DEFAULT_PANEL_HEIGHT_DP = 200
+        private const val DEFAULT_PANEL_HEIGHT_DP = 240
         private const val MIN_PANEL_HEIGHT_DP = 120
         private const val MAX_PANEL_HEIGHT_RATIO = 0.7f
+        private const val DEFAULT_EXTRA_KEYS_ROW_HEIGHT_DP = 38
+        private const val COMMAND_GAP_MS = 180L
+        private const val COMMAND_RETRY_MS = 300L
     }
 }
