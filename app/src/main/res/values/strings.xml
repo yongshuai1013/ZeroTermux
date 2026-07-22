@@ -1174,8 +1174,18 @@
     <string name="zt_timer_waiting_script">正在等待脚本完成</string>
     <string name="zt_timer_executing_current_script">正在执行当前脚本</string>
     <string name="zt_timer_notification_permission_required">定时任务需要通知权限，请授予后再使用</string>
+    <string name="zt_timer_notification_open_settings">请在系统设置中为 ZeroTermux 开启「通知」权限，开启后返回本页即可使用</string>
     <string name="zt_timer_main_program_missing">主程序终端不存在，请先打开 ZeroTermux 主界面</string>
     <string name="zt_timer_script_missing">脚本文件不存在，请稍后重试</string>
+    <string name="zt_timer_mode_interval">间隔重复</string>
+    <string name="zt_timer_mode_daily">每日定时</string>
+    <string name="zt_timer_daily_at">每日 %1$s</string>
+    <string name="zt_timer_daily_pick">选择每日执行时间</string>
+    <string name="zt_timer_daily_pick_with_time">每日执行时间：%1$s（点击修改）</string>
+    <string name="zt_timer_always_allow">始终允许此计时任务</string>
+    <string name="zt_timer_always_allow_sum">开启后，退出 APP 再打开会自动恢复未完成的定时任务与倒计时</string>
+    <string name="zt_timer_countdown_target">目标时刻 %1$s</string>
+    <string name="zt_timer_cannot_change_while_running">定时任务运行中，请先停止后再修改</string>
     <string name="zt_env_shell_title">ADB Shell运行Termux</string>
     <string name="zt_env_shell_sum">打开此选项输出sh脚本到指定目录\n关闭则取消此脚本输出</string>
     <string name="zt_env_shell_sum_msg">打开adb shell 运行以下命令:\n1.adb shell\n2.</string>
@@ -1225,7 +1235,12 @@
     <string name="zt_ai_agent_panel_hint">在此与 AI 对话…</string>
     <string name="zt_ai_agent_panel_send">发送</string>
     <string name="zt_ai_agent_panel_context_label">来自终端选中：</string>
-    <string name="zt_ai_agent_panel_empty">向 AI 提问，或在终端选中文本后长按「问AI」。</string>
+    <string name="zt_ai_agent_panel_empty">欢迎使用ZeroTermux智能体\n
+        注意：需要配置key\n
+        \n
+        你可以说: \n\"给我安装ubuntu系统\"\n\"当前终端报错\"\n\"你帮我修复下\"\n\n
+        也可以说: \n\"把字体改成红色\"\n\"背景改成白色\"\n\"切换一个容器\"\n
+    </string>
     <string name="zt_ai_agent_not_configured">请先在 ZeroTermux 设置 → 配置智能体AI 中填写 API Key 与模型。</string>
     <string name="zt_ai_agent_thinking">思考中…</string>
     <string name="zt_ai_agent_panel_open_menu">打开右侧菜单</string>
@@ -1670,30 +1685,51 @@
     <string name="zt_agent_ai_terminal_enabled_summary">开启后智能体可通过工具读取终端内容并发送命令</string>
     <string name="zt_agent_ai_zt_control_enabled">允许控制 ZeroTermux</string>
     <string name="zt_agent_ai_zt_control_enabled_summary">开启后可通过终端 zt 命令控制 App（打开页面、侧栏、弹窗等），需同时开启「允许控制终端」</string>
+    <string name="zt_agent_ai_filesystem_enabled">允许直接读写文件</string>
+    <string name="zt_agent_ai_filesystem_enabled_summary">开启后智能体可不经终端直接列出/读取/写入/创建文件与目录</string>
     <string name="zt_agent_ai_tool_rounds_title">工具调用轮数上限</string>
     <string name="zt_agent_ai_tool_rounds_definition">1 轮 = AI 读终端 → 理解 → 再发下一条命令</string>
     <string name="zt_agent_ai_tool_rounds_summary">上限为单次对话最多可自动循环的轮数，用于节省 Token，默认 40</string>
     <string name="zt_agent_ai_tool_rounds_warning">无人看管时任务可能一直跑；上限越大，浪费 Token 越多，请按需选低档位</string>
     <string name="zt_agent_ai_zt_control_system_prompt">你可通过 ZeroTermux 配置工具全面控制 App（无需逐项问用户权限，但危险操作须先确认）：\n1. list_zerotermux_capabilities — 列举全部设置键、美化项、openpage 页面、zt 命令；不确定时先调用。\n2. get_zerotermux_config / set_zerotermux_config — 读写 ZT 设置与美化（含内部/外部通道 isInternalPassage、工作站、AI 开关等）。\n3. open_zerotermux_page — 打开设置页（zt_settings、zero_termux_settings、agent_ai_settings 等）。\n4. run_zerotermux_zt — 优先用此执行 zt 命令（Socket，不依赖终端）：help、toast、openleft、openpage、reboot、x11status 等。\n5. run_zt_command — 备选，经终端执行 zt。\n6. get_zerotermux_left_menu / update_zerotermux_left_menu — 创建菜单前必须先 get 读取 xml_rules 与 builtin_menu_catalog；click 必须用 java:/ztShell:/jumpUrl: 等前缀。\n7. list_zerotermux_pkg_sources / switch_zerotermux_pkg_source — 与左侧「切换源」相同；默认清华源(tsinghua)；先列举方案让用户选，用户明确同意后再 switch 且 user_confirmed=true；会覆盖 sources.list 并 apt update。\n美化歧义：美化里「文字对比度」(text_shadow_enabled) 实际会让终端文字发糊——用户说「文字模糊/字糊/看不清字」应 set text_shadow_enabled=false；用户说「背景模糊/壁纸糊」才调整 blur_enabled/blur_radius。\n终端特效：用户说「雪花/下雪」→ set_zerotermux_config key=isSnowflakeShow value=true|false；「粒子/粒子动画/下雨」→ key=isRainShow；二者互斥，用 set 控制勿改菜单 XML。可 list category=beautify 或 beautify_ui 查看键名。\n内部通道切换 isInternalPassage 后通常需 reboot；reboot/重启 App 必须用户明确同意。根据工具返回 JSON 判断成功与否，禁止编造。</string>
-    <string name="zt_agent_ai_zt_requires_terminal">ZeroTermux 控制需通过终端执行 zt 命令，请同时开启「允许控制终端」</string>
+    <string name="zt_agent_ai_zt_requires_terminal">ZeroTermux 控制需通过终端执行 zt 命令，请同时开启「允许控制终端」（路径：ZeroTermux 设置 → 配置智能体AI）</string>
     <string name="zt_agent_ai_tool_run_command">正在执行 ZT 命令…</string>
     <string name="zt_agent_ai_tool_disabled">该工具未开启，请在智能体 AI 配置中打开相应权限</string>
+    <string name="zt_agent_ai_perm_enabled">已开启</string>
+    <string name="zt_agent_ai_perm_disabled">已关闭</string>
+    <string name="zt_agent_ai_permissions_status_header">【当前权限状态】（以下开关在 ZeroTermux 设置 → 配置智能体AI 中）</string>
+    <string name="zt_agent_ai_permission_guard_prompt">【权限守卫 — 必须遵守】\n1. 仅当上方「当前权限状态」为「已开启」时，才可声称能执行对应能力；为「已关闭」时禁止假装已执行。\n2. 用户请求需要「已关闭」权限的能力时：禁止编造终端输出、文件内容、安装状态、页面已打开等任何结果；必须用与用户相同的语言明确说明需要开启哪一项开关，并给出路径「ZeroTermux 设置 → 配置智能体AI」。\n3. 工具返回权限错误时，向用户转述该错误并再次提醒开启对应开关，禁止忽略错误或编造成功结果。\n4. 普通问答、解释概念时不受限；但一旦涉及「帮我执行/查看/修改/打开」，必须先核对权限状态。</string>
+    <string name="zt_agent_ai_all_tools_disabled_prompt">【全部工具权限已关闭】你当前没有任何工具（无终端、无 ZeroTermux 控制、无文件系统），只能做普通问答。用户要求执行命令、读写文件、打开页面、控制 App 时：必须说明三项权限均已关闭，并逐项告知在「配置智能体AI」中开启「允许控制终端」「允许控制 ZeroTermux」「允许直接读写文件」；禁止编造任何已执行的结果。</string>
+    <string name="zt_agent_ai_terminal_tool_disabled">权限不足：「允许控制终端」已关闭。请到 ZeroTermux 设置 → 配置智能体AI 中开启后再试。</string>
+    <string name="zt_agent_ai_zt_control_tool_disabled">权限不足：「允许控制 ZeroTermux」已关闭。请到 ZeroTermux 设置 → 配置智能体AI 中开启后再试。</string>
+    <string name="zt_agent_ai_filesystem_tool_disabled">权限不足：「允许直接读写文件」已关闭。请到 ZeroTermux 设置 → 配置智能体AI 中开启后再试；若已开启「允许控制终端」，也可让用户改用终端命令间接操作。</string>
+    <string name="zt_agent_ai_filesystem_tool_disabled_no_terminal">权限不足：「允许直接读写文件」与「允许控制终端」均已关闭。请到 ZeroTermux 设置 → 配置智能体AI 中至少开启其中一项后再试。</string>
     <string name="zt_agent_ai_reset_dialog_title">注意</string>
     <string name="zt_agent_ai_reset_dialog_message">此操作会清空你的AI智能体所有数据，推荐数据污染的时候清空(就是AI不正常)</string>
     <string name="zt_agent_ai_reset_title">还原AI所有数据</string>
     <string name="zt_agent_ai_reset_summary">如果AI开始胡言乱语数据被污染，就需要执行此操作</string>
     <string name="zt_agent_ai_reset_done">已还原 AI 智能体数据</string>
     <string name="zt_agent_ai_reset_panel_desc">还原 AI 智能体数据</string>
-    <string name="zt_agent_ai_tool_usage_prompt">普通问答、解释、闲聊请用与用户相同的语言回复，不要调用工具。仅在用户明确要求打开页面、读取/控制终端、或执行 zt 命令时才调用工具。工具执行完成后用与用户相同的语言简要说明结果。</string>
-    <string name="zt_agent_ai_default_system_prompt">你是 ZeroTermux 内置 AI 智能体。请用与用户相同的语言简洁回答，必要时使用 Markdown。\n\n重要：不要编造或猜测终端输出、软件是否已安装、文件是否存在等事实。未经工具返回的结果，必须明确说「无法确认」或「我目前看不到终端」，并告诉用户如何自行验证或开启相应权限。</string>
+    <string name="zt_agent_ai_tool_usage_prompt">普通问答、解释、闲聊请用与用户相同的语言回复，不要调用工具。仅在用户明确要求打开页面、读取/控制终端、读写文件、或执行 zt 命令时才调用工具。工具执行完成后用与用户相同的语言简要说明结果。</string>
+    <string name="zt_agent_ai_default_system_prompt">你是 ZeroTermux 内置 AI 智能体。请用与用户相同的语言简洁回答，必要时使用 Markdown。\n\n重要：不要编造或猜测终端输出、软件是否已安装、文件是否存在、命令是否已执行、页面是否已打开等事实。未经工具返回的结果，或对应权限为「已关闭」时，必须明确说「无法执行/无法确认」，并告诉用户需要在「配置智能体AI」中开启哪一项权限。</string>
     <string name="zt_agent_ai_terminal_system_prompt">你可以使用 read_terminal、send_terminal_command、send_terminal_key。每轮对话会附带【当前可见屏幕】终端快照，描述终端时必须严格依据快照，尤其是「当前可见屏幕」段落：\n1. 可见屏幕显示 Welcome to Termux / ~ $ → 就是 Termux 主环境，禁止说是 Ubuntu、root@localhost、SSH、passwd 等快照中不存在的内容。\n2. 末行是 shell 提示符 → 命令已结束，禁止说「正在安装/请稍等」。\n3. 快照状态为「等待确认」或末行含 [Y/n]、(y/N)、Do you want to continue 等 → 必须立刻用与用户相同的语言向用户说明终端在问什么，等待用户明确回复后再 send_terminal_command 发送 y/n/Enter；禁止自动替用户确认。\n4. 对话历史里旧的终端描述可能已过期，一律以最新快照为准。\n5. 回答「终端显示什么」时，应概括可见屏幕中的实际文字，不得臆造。\n6. send_terminal_command 默认会等待命令结束（最长约 10 分钟）；pkg/apt 安装很慢时可传 max_wait_ms=1800000（30 分钟）。若返回「等待超时」且快照仍无提示符，应调用 read_terminal 继续查看，不要假设安装失败。\n危险命令需用户确认后再执行。</string>
     <string name="zt_agent_ai_terminal_history_notice">【重要】下方对话历史中关于终端状态、Ubuntu、SSH、安装进度等描述可能已过期。回答时必须以用户最新消息末尾附带的「终端快照」为准，与快照矛盾的历史内容全部忽略。</string>
-    <string name="zt_agent_ai_terminal_disabled_prompt">【终端权限已关闭】你当前无法读取或控制终端，也没有 read_terminal / send_terminal_command 工具。用户询问 pkg/ssh/安装状态、命令输出、当前目录等时：禁止声称已安装/未安装或描述终端内容；应说明你看不到终端，建议用户在 ZeroTermux 设置 → 配置智能体AI 中开启「允许控制终端」，或让用户自己在终端运行命令（如 `pkg list-installed | grep openssh`）后把结果贴给你。</string>
-    <string name="zt_agent_ai_zt_control_disabled_prompt">【ZeroTermux 控制权限已关闭】你当前无法跳转 App 页面或执行 ztcommand。若用户要求打开设置页、侧栏等，请说明需要在配置中开启「允许控制 ZeroTermux」。</string>
+    <string name="zt_agent_ai_terminal_disabled_prompt">【终端权限已关闭】你当前无法读取或控制终端，也没有 read_terminal / send_terminal_command 工具。用户要求查看终端、执行命令、查询安装状态、pkg/ssh 等时：禁止声称已执行、已安装/未安装或描述终端内容；必须用与用户相同的语言说明需要开启「允许控制终端」（ZeroTermux 设置 → 配置智能体AI），或让用户自行在终端运行命令后把结果贴给你。</string>
+    <string name="zt_agent_ai_zt_control_disabled_prompt">【ZeroTermux 控制权限已关闭】你当前无法跳转 App 页面、修改设置或执行 zt 命令。用户要求打开设置页、侧栏、换源、美化等时：禁止声称已完成；必须说明需要开启「允许控制 ZeroTermux」（ZeroTermux 设置 → 配置智能体AI）。run_zt_command 还需同时开启「允许控制终端」。</string>
+    <string name="zt_agent_ai_filesystem_system_prompt">你可以使用文件系统工具直接操作磁盘（不经终端，优先于 cat/echo/mkdir/ls）：\n1. list_directory — 列目录；path 可省略（默认 home）。\n2. read_file — 读文本文件；大文件可设 max_bytes。\n3. write_file — 写/覆盖文本文件（自动创建父目录）。\n4. create_file — 创建空文件；mkdir — 创建目录（含多级）。\n5. stat_path — 查看是否存在及类型/大小。\n6. delete_path — 删除文件/目录；须用户明确同意且 user_confirmed=true。\n路径可用绝对路径或相对 home；仅允许 Termux files 与外部存储。描述文件内容必须以工具返回为准，禁止编造。安装软件、交互式命令仍用终端工具。</string>
+    <string name="zt_agent_ai_filesystem_disabled_prompt">【文件系统权限已关闭】你当前无法直接读写文件。用户要求创建/修改/查看/列出文件时：禁止声称已完成；必须说明需要开启「允许直接读写文件」（ZeroTermux 设置 → 配置智能体AI）。若「允许控制终端」已开启，可建议用户改用终端命令，但优先建议开启文件权限。</string>
+    <string name="zt_agent_ai_filesystem_disabled_no_terminal">【文件系统权限已关闭】你当前无法直接读写文件，且「允许控制终端」也关闭，无法间接用 cat/echo 操作。用户要求文件操作时：禁止声称已完成；必须说明需开启「允许直接读写文件」或「允许控制终端」（ZeroTermux 设置 → 配置智能体AI）。</string>
     <string name="zt_agent_ai_tool_read_terminal">正在读取终端…</string>
     <string name="zt_agent_ai_tool_send_command">正在发送命令…</string>
     <string name="zt_agent_ai_tool_send_key">正在发送按键…</string>
     <string name="zt_agent_ai_tool_read_after_send">命令已发送，读取终端…</string>
+    <string name="zt_agent_ai_tool_list_directory">正在列出目录…</string>
+    <string name="zt_agent_ai_tool_read_file">正在读取文件…</string>
+    <string name="zt_agent_ai_tool_write_file">正在写入文件…</string>
+    <string name="zt_agent_ai_tool_create_file">正在创建文件…</string>
+    <string name="zt_agent_ai_tool_mkdir">正在创建目录…</string>
+    <string name="zt_agent_ai_tool_delete_path">正在删除路径…</string>
+    <string name="zt_agent_ai_tool_stat_path">正在查看路径信息…</string>
     <string name="zt_agent_ai_tool_running">正在调用工具…</string>
     <string name="zt_agent_ai_tool_limit">智能体工具调用已达 %1$d 轮上限（与单次命令耗时无关）。任务未完成时可发送「继续」让 AI 接着排查，或拆分问题后重试</string>
     <string name="zt_agent_ai_terminal_unavailable">终端不可用，请先在主界面打开终端会话</string>
@@ -1731,6 +1767,16 @@
     <string name="zt_editor_ai_reset_done">已还原编辑器 AI 对话</string>
     <string name="zt_editor_ai_reset_panel_desc">还原编辑器 AI 对话</string>
     <string name="zt_editor_ai_running_bubble">AI\n运行中</string>
+    <string name="zt_editor_ai_edit_confirm_title">确认修改：%1$s</string>
+    <string name="zt_editor_ai_edit_confirm_file">目标文件：%1$s</string>
+    <string name="zt_editor_ai_edit_preview_insert">将插入以下内容：\n\n%1$s</string>
+    <string name="zt_editor_ai_edit_preview_range">将替换字符 %1$d..%2$d 为：\n\n%3$s</string>
+    <string name="zt_editor_ai_edit_preview_replace_all">将替换整个文件（约 %1$d 行）：\n\n%2$s</string>
+    <string name="zt_editor_ai_edit_rejected">用户已拒绝此次代码修改</string>
+    <string name="zt_editor_ai_edit_no_file">Error: 当前没有可编辑的打开文件，请先在编辑器中打开文本文件</string>
+    <string name="zt_editor_ai_build_finished">编译/运行已完成，AI 已自动结束。</string>
+    <string name="zt_editor_ai_build_finished_no_terminal">已启动编译，但终端不可用，无法等待完成。</string>
+    <string name="zt_editor_ai_system_prompt_edit_rules">13. 修改代码时只能编辑当前已打开的文件，禁止用 open_file 切换到其他文件后再写入；需要新文件时用 create_file。\n14. insert_at_cursor / replace_range / replace_all 会弹出确认框，用户拒绝后不要重复相同修改。\n15. run_build_script 执行并等待编译结束后会自动结束对话，无需继续调用工具。</string>
 
     <string name="back_menu_visible">左/右栏目显示背景图片</string>
     <string name="back_menu_visible_summary">你必须确保路径:\n~Ztinfo/menuBack/\n路径下有 left.png 以及 right.png</string>
@@ -1844,5 +1890,17 @@
     <string name="item_containers_time">创建时间:</string>
     <string name="install_empty_android">Android/data/files/xinhao/module,没有模块包</string>
     <string name="code_editor_loading">Loading...(如果为打开目录，则忽略此loading...，直接开始操作即可，无需等待)</string>
+
+    <string name="zt_crash_history_title">历史报错</string>
+    <string name="zt_crash_history_settings_summary">自动保存闪退记录，可查看详情、删除单项或全部清空；AI 调试端口 19998 也可访问</string>
+    <string name="zt_crash_history_hint">应用闪退时会自动记录异常信息，最多保留 100 条。</string>
+    <string name="zt_crash_history_empty">暂无历史报错记录</string>
+    <string name="zt_crash_history_clear_all">全部清空</string>
+    <string name="zt_crash_history_clear_all_confirm">确定要清空所有历史报错记录吗？此操作不可恢复。</string>
+    <string name="zt_crash_history_delete_confirm">确定要删除这条报错记录吗？</string>
+    <string name="zt_crash_history_detail_title">报错详情</string>
+    <string name="zt_crash_history_not_found">记录不存在或已被删除</string>
+    <string name="zt_crash_history_thread">线程: %1$s · 版本: %2$s</string>
+    <string name="zt_crash_history_detail_meta">时间: %1$s\n线程: %2$s\n版本: %3$s\n异常: %4$s\n消息: %5$s</string>
 
 </resources>

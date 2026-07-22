@@ -26,6 +26,7 @@ import com.termux.shared.termux.shell.am.TermuxAmSocketServer;
 import com.termux.shared.termux.shell.command.environment.TermuxShellEnvironment;
 import com.termux.shared.termux.theme.TermuxThemeUtils;
 import com.termux.zerocore.activity.UncaughtExceptionHandlerActivity;
+import com.termux.zerocore.crashhistory.ZtCrashHistoryRecorder;
 import com.termux.zerocore.config.mainmenu.MainMenuConfig;
 import com.termux.zerocore.filetype.MyFileImageListener;
 import com.termux.zerocore.filetype.MyZFileOperateListener;
@@ -159,14 +160,16 @@ ZFileManageHelp.getInstance().setFileOperateListener(new MyZFileOperateListener(
 
         XXPermissions.setScopedStorage(true);
         Thread.setDefaultUncaughtExceptionHandler((thread, e) -> {
+            ZtCrashHistoryRecorder.record(TermuxApplication.this, thread, e);
             Intent intent = new Intent(TermuxApplication.this, UncaughtExceptionHandlerActivity.class);
             intent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-            intent.putExtra("error", collectExceptionInfo((Exception) e));
+            intent.putExtra("error", collectExceptionInfo(e instanceof Exception ? (Exception) e : new Exception(e)));
             TermuxApplication.this.startActivity(intent);
             System.exit(1);//关闭已奔溃的app进程
         });
         //初始化定时器
         LibSuManage.getInstall().initTimer();
+        com.termux.zerocore.settings.timer.TimerResumeHelper.tryResumeTimer(this);
         MainMenuConfig.init(this);
         com.termux.zerocore.workstation.ZtWorkstationLifecycleHelper.register(this);
         new ClipBoardUtil().registerClipEvents();
