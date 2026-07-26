@@ -15,39 +15,23 @@ object EditorBuildScriptHelper {
 
     fun ensureScript(context: Context, directory: File, contextFile: File?, source: String?): File {
         val script = scriptFile(directory)
+        val hasEntry = hasRunnableEntry(contextFile, source)
         val desired = defaultScript(context, contextFile, source)
         if (!script.exists()) {
             script.parentFile?.mkdirs()
             script.writeText(desired)
-        } else if (shouldUpgradeLegacyScript(script.readText(), scriptLocaleTag(context))) {
+        } else if (hasEntry) {
+            // 当前文件有入口：复写 build.sh，指向该文件的编译/运行命令
             script.writeText(desired)
         }
+        // 无入口：保留上一次的 build.sh，不做改写
         return script
     }
 
-    /** 旧版 build.sh 或界面语言变化时，升级为当前语言的自动安装版本。 */
-    private fun shouldUpgradeLegacyScript(content: String, localeTag: String): Boolean {
-        if (!content.contains(SCRIPT_MARKER)) {
-            return false
-        }
-        if (!content.contains(SCRIPT_X11_MARKER)) {
-            return true
-        }
-        if (!content.contains("lang=$localeTag")) {
-            return true
-        }
-        if (!content.contains("export DISPLAY=${EditorX11Environment.DISPLAY}")) {
-            return true
-        }
-        if (!content.contains("ensure_editor_gui_stack")) {
-            return true
-        }
-        return !content.contains("ensure_java()")
-            && !content.contains("ensure_cc()")
-            && !content.contains("ensure_python()")
-            && !content.contains("ensure_php()")
-            && !content.contains("ensure_node()")
-            || content.contains("xorg-fonts-dejavu")
+    /** 当前源文件是否含可运行入口（main / __main__ 等）。无入口则保留已有 build.sh。 */
+    fun hasRunnableEntry(contextFile: File?, source: String?): Boolean {
+        if (contextFile == null) return false
+        return EditorRunDetector.detect(contextFile.name, source.orEmpty()) != null
     }
 
     fun defaultScript(context: Context, contextFile: File?, source: String?): String {
@@ -58,13 +42,13 @@ object EditorBuildScriptHelper {
         }
         val fileName = contextFile.name
         val fileSource = source.orEmpty()
-        val body = when {
-            EditorRunLanguage.JAVA.matchesExtension(fileName) -> javaScriptBody(strings, fileName, fileSource)
-            EditorRunLanguage.C.matchesExtension(fileName) -> cScriptBody(fileName)
-            EditorRunLanguage.PYTHON.matchesExtension(fileName) -> pythonScriptBody(fileName)
-            EditorRunLanguage.PHP.matchesExtension(fileName) -> phpScriptBody(fileName)
-            EditorRunLanguage.NODE.matchesExtension(fileName) -> nodeScriptBody(fileName)
-            else -> """
+        val body = when (EditorRunDetector.detect(fileName, fileSource)) {
+            EditorRunLanguage.JAVA -> javaScriptBody(strings, fileName, fileSource)
+            EditorRunLanguage.C -> cScriptBody(fileName)
+            EditorRunLanguage.PYTHON -> pythonScriptBody(fileName)
+            EditorRunLanguage.PHP -> phpScriptBody(fileName)
+            EditorRunLanguage.NODE -> nodeScriptBody(fileName)
+            null -> """
                 # ${strings.currentFileComment(fileName)}
                 echo ${strings.editForFile(fileName)}
             """.trimIndent()
@@ -95,8 +79,8 @@ object EditorBuildScriptHelper {
         private val installNode = bashSingleQuote(context.getString(R.string.editor_build_script_install_node))
         private val installNodeFailed = bashSingleQuote(context.getString(R.string.editor_build_script_install_node_failed))
         private val installGuiFonts = bashSingleQuote(context.getString(R.string.editor_build_script_install_gui_fonts))
-        private val guiStarted = bashSingleQuote(context.getString(R.string.editor_build_script_gui_started))
         private val guiSetVisibleHint = bashSingleQuote(context.getString(R.string.editor_build_script_gui_set_visible_hint))
+        private val guiViewHint = bashSingleQuote(context.getString(R.string.editor_build_script_gui_view_hint))
 
         fun currentFileComment(fileName: String): String {
             return context.getString(R.string.editor_build_script_current_file, fileName)
@@ -204,7 +188,7 @@ object EditorBuildScriptHelper {
 
         fun guiSetVisibleHintQuoted(): String = guiSetVisibleHint
 
-        fun guiStartedQuoted(): String = guiStarted
+        fun guiViewHintQuoted(): String = guiViewHint
 
         private fun bashSingleQuote(value: String): String {
             return EditorBuildScriptHelper.bashSingleQuote(value)
@@ -220,6 +204,8 @@ object EditorBuildScriptHelper {
             appendLine("$SCRIPT_MARKER lang=${strings.localeTag} $SCRIPT_X11_MARKER — ${strings.headerNote}")
             appendLine()
             appendLine(strings.ensureFunctionsBlock())
+            appendLine()
+            appendLine("stop_editor_gui_app")
             appendLine()
         }
     }
@@ -248,13 +234,13 @@ object EditorBuildScriptHelper {
             ${setVisibleWarn}editor_gpu_env
             java -Djava.awt.headless=false "${'$'}CLASS" &
             GUI_PID=${'$'}!
+            echo "${'$'}GUI_PID" > "${EditorX11Environment.APP_PID_FILE}"
             sleep 0.8
             if ! kill -0 "${'$'}GUI_PID" 2>/dev/null; then
               wait "${'$'}GUI_PID" 2>/dev/null || true
               exit 1
             fi
-            echo ${strings.guiStartedQuoted()} "(PID ${'$'}GUI_PID, DISPLAY=${EditorX11Environment.DISPLAY})"
-            refresh_editor_gui_display
+            echo ${strings.guiViewHintQuoted()}
         """.trimIndent()
     }
 
