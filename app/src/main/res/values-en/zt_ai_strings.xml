@@ -82,7 +82,7 @@
     <string name="zt_ai_tool_param_max_wait">Max ms to wait for shell prompt after send; default 600000</string>
     <string name="zt_ai_tool_param_terminal_key">enter, tab, escape, backspace, up, down, left, right, ctrl_c, ctrl_d, ctrl_l, ctrl_z</string>
     <string name="zt_ai_tool_param_run_zt_cmd">zt command without `zt` prefix, e.g. help or openpage zt_settings</string>
-    <string name="zt_ai_tool_param_fs_path">Absolute path, or relative to ~/home; Termux files and external storage allowed</string>
+    <string name="zt_ai_tool_param_fs_path">Path: absolute, relative to home, ~/…, $HOME/…, or /tmp (maps to Termux $PREFIX/tmp)</string>
     <string name="zt_ai_tool_param_fs_content">Full text content to write</string>
     <string name="zt_ai_tool_param_fs_max_bytes">Max bytes to read; default 524288 (512KB), max 2MB</string>
 
@@ -270,7 +270,7 @@
     <string name="zt_ai_cfg_rain_title">Particle/rain effect</string>
     <string name="zt_ai_cfg_rain_desc">Terminal particle/rain animation. Aliases: particle/rain/粒子/下雨. Mutually exclusive with isSnowflakeShow</string>
     <string name="zt_ai_cfg_reset_volume_title">Restore volume keys</string>
-    <string name="zt_ai_cfg_ai_panel_title">Right-side AI agent panel</string>
+    <string name="zt_ai_cfg_ai_panel_title">AI agent in right-side AI tab</string>
     <string name="zt_ai_cfg_show_command_title">Show terminal layer</string>
     <string name="zt_ai_cfg_internal_passage_title">X11 internal channel</string>
     <string name="zt_ai_cfg_internal_passage_desc">Usually requires app restart; use openpage zero_termux_settings for full setup</string>

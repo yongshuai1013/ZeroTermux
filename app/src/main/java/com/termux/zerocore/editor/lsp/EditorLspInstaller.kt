@@ -10,6 +10,8 @@ import com.termux.zerocore.utils.SingletonCommunicationUtils
 import java.io.BufferedReader
 import java.io.File
 import java.io.InputStreamReader
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicBoolean
 
 class EditorLspInstaller(private val context: Context) {
     data class ServerPackage(
@@ -19,7 +21,9 @@ class EditorLspInstaller(private val context: Context) {
         val languageIds: List<String>,
         val npmPackages: List<String>,
         val commands: Map<String, String>,
-        val requiredOnFirstOpen: Boolean = false
+        val requiredOnFirstOpen: Boolean = false,
+        /** npm | jdtls 等自定义安装 */
+        val installKind: String = INSTALL_KIND_NPM
     )
 
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -38,6 +42,10 @@ class EditorLspInstaller(private val context: Context) {
         }
     }
 
+    /**
+     * 安装 LSP。若上一次安装被 ^C 中断，包仍可能停在「正在安装」；
+     * 再次调用会取消旧等待并重新往终端发送安装命令。
+     */
     fun installPackage(packageId: String, quietIfInstalled: Boolean = false, onFinished: ((Boolean, String) -> Unit)? = null) {
         val serverPackage = packageById(packageId) ?: return
         if (isPackageInstalled(packageId)) {
@@ -45,19 +53,42 @@ class EditorLspInstaller(private val context: Context) {
             onFinished?.invoke(true, "installed")
             return
         }
+        val cancelFlag = AtomicBoolean(false)
+        var restarted = false
         synchronized(installingPackages) {
-            if (!installingPackages.add(packageId)) {
-                if (!quietIfInstalled) postMessage("${serverPackage.displayName} 正在下载")
-                return
+            val previous = installCancelFlags[packageId]
+            if (previous != null || packageId in installingPackages) {
+                // 取消上一次卡在 waitForCondition 的线程，允许重新发终端命令
+                previous?.set(true)
+                restarted = true
             }
+            installingPackages.add(packageId)
+            installCancelFlags[packageId] = cancelFlag
         }
-        postMessage("正在安装 ${serverPackage.displayName}")
+        if (restarted) {
+            if (!quietIfInstalled) postMessage("重新开始安装 ${serverPackage.displayName}")
+        } else if (!quietIfInstalled) {
+            postMessage("正在安装 ${serverPackage.displayName}")
+        }
         Thread {
             val result = runCatching {
-                installPackageWorker(serverPackage)
+                installPackageWorker(serverPackage, cancelFlag, interruptFirst = restarted)
             }
-            synchronized(installingPackages) {
-                installingPackages.remove(packageId)
+            val stillOwner = synchronized(installingPackages) {
+                if (installCancelFlags[packageId] === cancelFlag) {
+                    installingPackages.remove(packageId)
+                    installCancelFlags.remove(packageId)
+                    true
+                } else {
+                    false
+                }
+            }
+            if (!stillOwner || cancelFlag.get()) {
+                // 已被新一轮安装取代，或主动取消：不写 marker、不弹完成
+                if (stillOwner && cancelFlag.get()) {
+                    mainHandler.post { onFinished?.invoke(false, "cancelled") }
+                }
+                return@Thread
             }
             if (result.isSuccess) {
                 markerFile(packageId).writeText(serverPackage.npmPackages.joinToString("\n"))
@@ -75,6 +106,15 @@ class EditorLspInstaller(private val context: Context) {
         }
     }
 
+    /** 取消指定包的安装等待（例如用户 ^C 后想重新点安装）。 */
+    fun cancelInstall(packageId: String) {
+        synchronized(installingPackages) {
+            installCancelFlags[packageId]?.set(true)
+            installingPackages.remove(packageId)
+            installCancelFlags.remove(packageId)
+        }
+    }
+
     fun isInstalling(packageId: String): Boolean {
         synchronized(installingPackages) {
             return installingPackages.contains(packageId)
@@ -83,6 +123,10 @@ class EditorLspInstaller(private val context: Context) {
 
     fun isPackageInstalled(packageId: String): Boolean {
         val serverPackage = packageById(packageId) ?: return false
+        when (serverPackage.installKind) {
+            INSTALL_KIND_JDTLS -> return EditorJdtLsSupport.isInstalled()
+            INSTALL_KIND_CLANGD -> return EditorClangdSupport.isInstalled()
+        }
         return serverPackage.commands.values.all { command ->
             EditorLspCommandResolver.isCommandAvailable(command)
         }
@@ -100,19 +144,39 @@ class EditorLspInstaller(private val context: Context) {
         }
     }
 
-    fun launchSpecForLanguage(languageId: String): EditorLspLaunchSpec? {
+    fun launchSpecForLanguage(languageId: String, projectRoot: File? = null): EditorLspLaunchSpec? {
         val serverPackage = PACKAGES.firstOrNull { pkg ->
             languageId in pkg.languageIds && isPackageInstalled(pkg.id)
         } ?: return null
+        when (serverPackage.installKind) {
+            INSTALL_KIND_JDTLS -> return EditorJdtLsSupport.resolveLaunchSpec(projectRoot)
+            INSTALL_KIND_CLANGD -> return EditorClangdSupport.resolveLaunchSpec(projectRoot)
+        }
         val raw = serverPackage.commands[languageId] ?: return null
         return EditorLspCommandResolver.resolveLaunchSpec(raw)
     }
 
-    private fun installPackageWorker(serverPackage: ServerPackage) {
-        ensureNpmReady()
+    private fun installPackageWorker(
+        serverPackage: ServerPackage,
+        cancelFlag: AtomicBoolean,
+        interruptFirst: Boolean
+    ) {
+        when (serverPackage.installKind) {
+            INSTALL_KIND_JDTLS -> {
+                installJdtLs(serverPackage, cancelFlag, interruptFirst)
+                return
+            }
+            INSTALL_KIND_CLANGD -> {
+                installClangd(serverPackage, cancelFlag, interruptFirst)
+                return
+            }
+        }
+        ensureNpmReady(cancelFlag, interruptFirst)
+        throwIfCancelled(cancelFlag)
         if (canUseTerminal()) {
-            sendLspInstallToTerminal(serverPackage)
-            if (!waitForCondition({ isPackageInstalled(serverPackage.id) }, LSP_INSTALL_WAIT_MS)) {
+            sendLspInstallToTerminal(serverPackage, interruptFirst)
+            if (!waitForCondition({ isPackageInstalled(serverPackage.id) }, LSP_INSTALL_WAIT_MS, cancelFlag)) {
+                throwIfCancelled(cancelFlag)
                 throw IllegalStateException("终端安装超时，请在 Termux 中确认命令是否执行完成")
             }
         } else {
@@ -120,14 +184,66 @@ class EditorLspInstaller(private val context: Context) {
         }
     }
 
-    private fun ensureNpmReady() {
+    private fun installJdtLs(
+        serverPackage: ServerPackage,
+        cancelFlag: AtomicBoolean,
+        interruptFirst: Boolean
+    ) {
+        val script = EditorJdtLsSupport.installShellScript()
+        if (canUseTerminal()) {
+            prepareTerminalForInstall(interruptFirst)
+            sendToTerminal("echo '[ZeroTermux Editor] Installing LSP: ${serverPackage.displayName}'\n")
+            val scriptFile = File(baseDir(), "install-jdtls.sh")
+            baseDir().mkdirs()
+            scriptFile.writeText(script + "\n")
+            sendToTerminal("sh ${shellQuote(scriptFile.absolutePath)}\n")
+            if (!waitForCondition({ isPackageInstalled(serverPackage.id) }, JDTLS_INSTALL_WAIT_MS, cancelFlag)) {
+                throwIfCancelled(cancelFlag)
+                throw IllegalStateException("jdt-ls 安装超时，请在 Termux 中确认下载/解压是否完成，并已安装 openjdk-21")
+            }
+        } else {
+            runShellScript(script)
+            if (!isPackageInstalled(serverPackage.id)) {
+                throw IllegalStateException("jdt-ls 未就绪：请确认 openjdk-21 与 ~/.zerotermux/editor-lsp/jdtls 已安装")
+            }
+        }
+    }
+
+    private fun installClangd(
+        serverPackage: ServerPackage,
+        cancelFlag: AtomicBoolean,
+        interruptFirst: Boolean
+    ) {
+        val script = EditorClangdSupport.installShellScript()
+        if (canUseTerminal()) {
+            prepareTerminalForInstall(interruptFirst)
+            sendToTerminal("echo '[ZeroTermux Editor] Installing LSP: ${serverPackage.displayName}'\n")
+            val scriptFile = File(baseDir(), "install-clangd.sh")
+            baseDir().mkdirs()
+            scriptFile.writeText(script + "\n")
+            sendToTerminal("sh ${shellQuote(scriptFile.absolutePath)}\n")
+            if (!waitForCondition({ isPackageInstalled(serverPackage.id) }, CLANGD_INSTALL_WAIT_MS, cancelFlag)) {
+                throwIfCancelled(cancelFlag)
+                throw IllegalStateException("clangd 安装超时，请在 Termux 中确认: pkg install -y clang")
+            }
+        } else {
+            runShellScript(script)
+            if (!isPackageInstalled(serverPackage.id)) {
+                throw IllegalStateException("clangd 未就绪：请执行 pkg install -y clang")
+            }
+        }
+    }
+
+    private fun ensureNpmReady(cancelFlag: AtomicBoolean, interruptFirst: Boolean) {
         if (isNpmInstalled()) return
         if (canUseTerminal()) {
             mainHandler.post {
                 postMessage("正在通过 Termux 终端安装 Node.js / npm…")
-                sendNpmInstallToTerminal()
             }
-            if (!waitForCondition({ isNpmInstalled() }, NPM_INSTALL_WAIT_MS)) {
+            prepareTerminalForInstall(interruptFirst)
+            sendNpmInstallToTerminal()
+            if (!waitForCondition({ isNpmInstalled() }, NPM_INSTALL_WAIT_MS, cancelFlag)) {
+                throwIfCancelled(cancelFlag)
                 throw IllegalStateException("npm 安装超时，请在 Termux 终端中手动执行: pkg install -y nodejs-lts")
             }
             return
@@ -142,6 +258,25 @@ class EditorLspInstaller(private val context: Context) {
         return SingletonCommunicationUtils.getInstance().hasTerminalListener()
     }
 
+    /**
+     * 重新安装前尽量打断卡在 pkg/npm 的进程，再回车回到提示符。
+     * （对应用户在终端按 ^C 后再次点安装的场景。）
+     * 须在后台线程调用（含短暂 sleep）。
+     */
+    private fun prepareTerminalForInstall(interruptFirst: Boolean = false) {
+        val listener = SingletonCommunicationUtils.getInstance()
+            .getmSingletonCommunicationListener()
+        if (interruptFirst) {
+            listener.sendTextToTerminalCtrl("c", true)
+            try {
+                Thread.sleep(400)
+            } catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
+            }
+        }
+        listener.sendTextToTerminal("\n")
+    }
+
     private fun sendToTerminal(command: String) {
         SingletonCommunicationUtils.getInstance()
             .getmSingletonCommunicationListener()
@@ -153,7 +288,8 @@ class EditorLspInstaller(private val context: Context) {
         sendToTerminal("pkg install -y nodejs-lts || pkg install -y nodejs\n")
     }
 
-    private fun sendLspInstallToTerminal(serverPackage: ServerPackage) {
+    private fun sendLspInstallToTerminal(serverPackage: ServerPackage, interruptFirst: Boolean) {
+        prepareTerminalForInstall(interruptFirst)
         val npmPackages = serverPackage.npmPackages.joinToString(" ")
         sendToTerminal("echo '[ZeroTermux Editor] Installing LSP: ${serverPackage.displayName}'\n")
         sendToTerminal(
@@ -163,13 +299,24 @@ class EditorLspInstaller(private val context: Context) {
         )
     }
 
-    private fun waitForCondition(check: () -> Boolean, timeoutMs: Long): Boolean {
+    private fun waitForCondition(
+        check: () -> Boolean,
+        timeoutMs: Long,
+        cancelFlag: AtomicBoolean
+    ): Boolean {
         val deadline = System.currentTimeMillis() + timeoutMs
         while (System.currentTimeMillis() < deadline) {
+            if (cancelFlag.get()) return false
             if (check()) return true
             Thread.sleep(POLL_INTERVAL_MS)
         }
-        return check()
+        return !cancelFlag.get() && check()
+    }
+
+    private fun throwIfCancelled(cancelFlag: AtomicBoolean) {
+        if (cancelFlag.get()) {
+            throw InterruptedException("安装已取消，可重新点击安装")
+        }
     }
 
     private fun installNpmBlocking() {
@@ -255,21 +402,28 @@ class EditorLspInstaller(private val context: Context) {
 
     companion object {
         const val SHELL_BASIC_ID = "shell-basic"
+        const val PYTHON_PACKAGE_ID = "python"
+        const val INSTALL_KIND_NPM = "npm"
+        const val INSTALL_KIND_JDTLS = "jdtls"
+        const val INSTALL_KIND_CLANGD = "clangd"
         private const val MAX_OUTPUT_LENGTH = 4000
         private const val POLL_INTERVAL_MS = 2000L
         private const val NPM_INSTALL_WAIT_MS = 10 * 60 * 1000L
         private const val LSP_INSTALL_WAIT_MS = 15 * 60 * 1000L
+        private const val JDTLS_INSTALL_WAIT_MS = 30 * 60 * 1000L
+        private const val CLANGD_INSTALL_WAIT_MS = 30 * 60 * 1000L
         private val installingPackages = LinkedHashSet<String>()
+        private val installCancelFlags = ConcurrentHashMap<String, AtomicBoolean>()
 
         private val PACKAGES = listOf(
             ServerPackage(
                 id = SHELL_BASIC_ID,
                 displayName = "Shell 基础 LSP (bash/zsh/fish)",
-                description = "首次打开编辑器自动初始化，提供 shell 脚本基础补全",
+                description = "在 LSP 列表中安装后提供 shell 脚本基础补全",
                 languageIds = listOf(EditorLspManager.LANGUAGE_SHELL),
                 npmPackages = listOf("bash-language-server"),
                 commands = mapOf(EditorLspManager.LANGUAGE_SHELL to "bash-language-server start"),
-                requiredOnFirstOpen = true
+                requiredOnFirstOpen = false
             ),
             ServerPackage(
                 id = "json",
@@ -294,9 +448,9 @@ class EditorLspInstaller(private val context: Context) {
                 )
             ),
             ServerPackage(
-                id = "python",
-                displayName = "Python LSP",
-                description = "提供 Python 补全",
+                id = PYTHON_PACKAGE_ID,
+                displayName = "Python LSP (Pyright)",
+                description = "打开 .py 可提示安装；提供补全与类型/语法诊断（需 npm）",
                 languageIds = listOf(EditorLspManager.LANGUAGE_PYTHON),
                 npmPackages = listOf("pyright"),
                 commands = mapOf(EditorLspManager.LANGUAGE_PYTHON to "pyright-langserver --stdio")
@@ -308,6 +462,27 @@ class EditorLspInstaller(private val context: Context) {
                 languageIds = listOf(EditorLspManager.LANGUAGE_YAML),
                 npmPackages = listOf("yaml-language-server"),
                 commands = mapOf(EditorLspManager.LANGUAGE_YAML to "yaml-language-server --stdio")
+            ),
+            ServerPackage(
+                id = EditorJdtLsSupport.PACKAGE_ID,
+                displayName = "Java LSP (Eclipse JDT.LS)",
+                description = "打开 .java 可提示安装；提供类/方法/import 补全与诊断（需 OpenJDK 21+，包体较大）",
+                languageIds = listOf(EditorLspManager.LANGUAGE_JAVA),
+                npmPackages = emptyList(),
+                commands = mapOf(EditorLspManager.LANGUAGE_JAVA to "jdtls --stdio"),
+                installKind = INSTALL_KIND_JDTLS
+            ),
+            ServerPackage(
+                id = EditorClangdSupport.PACKAGE_ID,
+                displayName = "C/C++ LSP (clangd)",
+                description = "打开 .c/.h/.cpp 可提示安装；补全与语法诊断（pkg install clang，体积较大）",
+                languageIds = listOf(EditorLspManager.LANGUAGE_C, EditorLspManager.LANGUAGE_CPP),
+                npmPackages = emptyList(),
+                commands = mapOf(
+                    EditorLspManager.LANGUAGE_C to "clangd",
+                    EditorLspManager.LANGUAGE_CPP to "clangd"
+                ),
+                installKind = INSTALL_KIND_CLANGD
             )
         )
 

@@ -108,7 +108,6 @@ import com.termux.view.TerminalView;
 import com.termux.view.TerminalViewClient;
 import com.termux.x11.MainActivity;
 import com.termux.zerocore.activity.EditTextActivity;
-import com.termux.zerocore.ai.llm.LLMTransitFragment;
 import com.termux.zerocore.background.FireworkView;
 import com.termux.zerocore.bean.EditPromptBean;
 import com.termux.zerocore.bean.ZDYDataBean;
@@ -127,7 +126,6 @@ import com.termux.zerocore.config.mainmenu.view.adapter.MainMenuPackageAdapter;
 import com.termux.zerocore.dialog.YesNoDialog;
 import com.termux.zerocore.config.other.ZTGitHubVersion;
 import com.termux.zerocore.config.ztcommand.config.XmlMenuConfig;
-import com.termux.zerocore.ai.deepseek.DeepSeekTransitFragment;
 import com.termux.zerocore.ai.deepseek.markdown.MarkDownAPI;
 import com.termux.zerocore.dialog.BeautifySettingDialog;
 import com.termux.zerocore.dialog.CommonCommandsDialog;
@@ -538,23 +536,28 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
         final Intent intent = getIntent();
         setIntent(null);
 
+        final boolean launchRepairMode = intent != null && intent.getBooleanExtra(TERMUX_ACTIVITY.EXTRA_REPAIR_MODE, false);
+        final boolean launchFailsafe = launchRepairMode
+            || (intent != null && intent.getBooleanExtra(TERMUX_ACTIVITY.EXTRA_FAILSAFE_SESSION, false));
+
         if (mTermuxService.isTermuxSessionsEmpty()) {
             if (mIsVisible) {
-                TermuxInstaller.setupBootstrapIfNeeded(TermuxActivity.this, () -> {
-                    if (mTermuxService == null) return; // Activity might have been destroyed.
-                    // ZeroTermux add {@
-                    initCommand();
-                    // @}
-                    try {
-                        boolean launchFailsafe = false;
-                        if (intent != null && intent.getExtras() != null) {
-                            launchFailsafe = intent.getExtras().getBoolean(TERMUX_ACTIVITY.EXTRA_FAILSAFE_SESSION, false);
+                if (launchRepairMode) {
+                    // Repair mode: Android system shell only — skip Termux bootstrap and PREFIX setup.
+                    startRepairOrFailsafeSession(true);
+                } else {
+                    TermuxInstaller.setupBootstrapIfNeeded(TermuxActivity.this, () -> {
+                        if (mTermuxService == null) return; // Activity might have been destroyed.
+                        // ZeroTermux add {@
+                        initCommand();
+                        // @}
+                        try {
+                            mTermuxTerminalSessionActivityClient.addNewSession(launchFailsafe, null);
+                        } catch (WindowManager.BadTokenException e) {
+                            // Activity finished - ignore.
                         }
-                        mTermuxTerminalSessionActivityClient.addNewSession(launchFailsafe, null);
-                    } catch (WindowManager.BadTokenException e) {
-                        // Activity finished - ignore.
-                    }
-                });
+                    });
+                }
             } else {
                 // The service connected while not in foreground - just bail out.
                 finishActivityIfNotFinishing();
@@ -565,8 +568,11 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
             // each time.
             if (!mIsActivityRecreated && intent != null && Intent.ACTION_RUN.equals(intent.getAction())) {
                 // Android 7.1 app shortcut from res/xml/shortcuts.xml.
-                boolean isFailSafe = intent.getBooleanExtra(TERMUX_ACTIVITY.EXTRA_FAILSAFE_SESSION, false);
-                mTermuxTerminalSessionActivityClient.addNewSession(isFailSafe, null);
+                if (launchRepairMode) {
+                    startRepairOrFailsafeSession(true);
+                } else {
+                    mTermuxTerminalSessionActivityClient.addNewSession(launchFailsafe, null);
+                }
             } else {
                 mTermuxTerminalSessionActivityClient.setCurrentSession(mTermuxTerminalSessionActivityClient.getCurrentStoredSessionOrLast());
             }
@@ -582,6 +588,40 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
 
         // Respect being stopped from the {@link TermuxService} notification action.
         finishActivityIfNotFinishing();
+    }
+
+    /**
+     * Start a repair-mode session: {@code /system/bin/sh} with Android PATH,
+     * cwd under {@code /data/data/com.termux/files}, without Termux PREFIX bootstrap.
+     */
+    private void startRepairOrFailsafeSession(boolean repairMode) {
+        try {
+            String sessionName = repairMode ? getString(R.string.action_repair_mode) : null;
+            String workingDirectory = repairMode ? TermuxConstants.TERMUX_FILES_DIR_PATH : null;
+            mTermuxTerminalSessionActivityClient.addNewSession(true, sessionName, workingDirectory);
+        } catch (WindowManager.BadTokenException e) {
+            // Activity finished - ignore.
+        }
+    }
+
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+        if (mIsInvalidState || mTermuxService == null || mTermuxTerminalSessionActivityClient == null)
+            return;
+        if (intent == null || !Intent.ACTION_RUN.equals(intent.getAction()))
+            return;
+
+        boolean repairMode = intent.getBooleanExtra(TERMUX_ACTIVITY.EXTRA_REPAIR_MODE, false);
+        boolean failsafe = repairMode
+            || intent.getBooleanExtra(TERMUX_ACTIVITY.EXTRA_FAILSAFE_SESSION, false);
+        if (repairMode) {
+            startRepairOrFailsafeSession(true);
+        } else {
+            mTermuxTerminalSessionActivityClient.addNewSession(failsafe, null);
+        }
+        setIntent(null);
     }
 
 
@@ -772,8 +812,7 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
             indexSwitch(1);
         });
         findViewById(R.id.deepseek).setOnClickListener(view -> {
-            indexSwitch(0);
-            fragmentManager(1);
+            showAiAgentTabContent();
         });
 		// @}
     }
@@ -1103,6 +1142,35 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
     public SlidingConsumer getDrawer() {
         return mSlidingConsumer;
     }
+
+    /**
+     * 侧栏是否处于「有效打开」：完全打开，或拖动/关闭动画中进度仍较高。
+     * 进度降到阈值以下即视为关闭，以便主界面顶栏立刻出现。
+     */
+    private boolean isAiDrawerEffectivelyOpen() {
+        if (mSlidingConsumer == null || mSlidingConsumer.isClosed()) {
+            return false;
+        }
+        if (mSlidingConsumer.isOpened()) {
+            return true;
+        }
+        // 拖动/动画过程中既不是 isOpened 也不是 isClosed，用进度判断。
+        return mDrawerSwipeProgress >= 0.85f;
+    }
+
+    private void updateDrawerOpenProgress(float progress, boolean forceNotify) {
+        float old = mDrawerSwipeProgress;
+        mDrawerSwipeProgress = Math.max(0f, Math.min(1f, progress));
+        boolean wasOpen = old >= 0.85f;
+        boolean nowOpen = mDrawerSwipeProgress >= 0.85f;
+        if ((wasOpen != nowOpen || forceNotify) && mAiAgentPanelHelper != null) {
+            mAiAgentPanelHelper.onDrawerVisibilityChanged();
+        }
+    }
+
+    private void updateDrawerOpenProgress(float progress) {
+        updateDrawerOpenProgress(progress, false);
+    }
 	// @}
 
 
@@ -1323,8 +1391,12 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
     private ImageView open_image_data;
     private CardView data_info_card;
     private TextView data_info_content;
-    private CardView ip_card;
+    /** IP 卡片常显；展开详情改由 menu_header_more_row 触发。 */
+    private View ip_card;
     private ImageView open_image;
+    private View menu_header_more_row;
+    private View menu_header_details;
+    private boolean mMenuHeaderDetailsExpanded;
     private CardView info_card;
     private TextView version;
     private TextView error_msg;
@@ -1353,6 +1425,7 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
     private View menu_package_header;
     private TextView menu_package_current;
     private ImageView open_image_menu;
+    private ImageView open_settings;
     private boolean mMenuPackageExpanded;
     private Button mKeyBordButton;
 	private SlidingConsumer mSlidingConsumer;
@@ -1363,6 +1436,8 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
     LocalReceiver localReceiver;
     // ZeroTermux add {@
     private ZtAiAgentPanelHelper mAiAgentPanelHelper;
+    /** 右侧/左侧抽屉当前开合进度 0~1；用于 AI 顶栏尽早出现，不必等抽屉完全关完。 */
+    private float mDrawerSwipeProgress;
     // @}
 
     private void initZeroView() {
@@ -1371,11 +1446,14 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
         menu_package_header = findViewById(R.id.menu_package_header);
         menu_package_current = findViewById(R.id.menu_package_current);
         open_image_menu = findViewById(R.id.open_image_menu);
+        open_settings = findViewById(R.id.open_settings);
         scrollView_main = findViewById(R.id.scrollView_main);
         file_layout = findViewById(R.id.file_layout);
         main_card = findViewById(R.id.main_card);
         ip_card = findViewById(R.id.ip_card);
         open_image = findViewById(R.id.open_image);
+        menu_header_more_row = findViewById(R.id.menu_header_more_row);
+        menu_header_details = findViewById(R.id.menu_header_details);
         info_card = findViewById(R.id.info_card);
         frame_file = findViewById(R.id.frame_file);
         session_rl = findViewById(R.id.session_rl);
@@ -1408,14 +1486,26 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
         mKeyBordButton.setOnClickListener(v -> {
             showKeyBord();
         });
-        zt_new.setOnClickListener(v -> {
-            Intent intent = new Intent();
-            intent.setData(Uri.parse(ZTConstantConfig.URL.ZT_GITHUB_URL));//Url 就是你要打开的网址
-            intent.setAction(Intent.ACTION_VIEW);
-            startActivity(intent); //启动浏览器
-        });
+        if (zt_new != null) {
+            zt_new.setOnClickListener(v -> {
+                try {
+                    Intent intent = new Intent();
+                    intent.setData(Uri.parse(ZTConstantConfig.URL.ZT_GITHUB_URL));
+                    intent.setAction(Intent.ACTION_VIEW);
+                    startActivity(intent);
+                } catch (Exception e) {
+                    e.printStackTrace();
+                }
+            });
+            zt_new.setVisibility(View.GONE);
+            try {
+                ZTGitHubVersion.create().initZtVersionVisible(zt_new);
+            } catch (Exception e) {
+                zt_new.setVisibility(View.GONE);
+                e.printStackTrace();
+            }
+        }
         telegram_group_tv.setOnClickListener(this);
-        ZTGitHubVersion.create().initZtVersionVisible(zt_new);
         try {
             double_tishi.setText(double_tishi.getText() + "\n" + TermuxInstaller.determineTermuxArchName().toUpperCase());
 
@@ -1425,20 +1515,25 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
 
         mTerminalView.setDoubleClickListener(this);
         getServiceVs();
-        main_card.setOnClickListener(
-            v -> startActivity(new Intent(TermuxActivity.this, ZtSettingsActivity.class)));
-        /*findViewById(R.id.settings).setOnClickListener(
-            v -> startActivity(new Intent(TermuxActivity.this, ZtSettingsActivity.class)));*/
+        View.OnClickListener openSettings = v ->
+            startActivity(new Intent(TermuxActivity.this, ZtSettingsActivity.class));
+        // 点品牌/版本行进设置；「当前菜单」行展开详情；IP 卡片始终展示
+        if (open_settings != null) {
+            open_settings.setOnClickListener(openSettings);
+        }
+        main_card.setOnClickListener(openSettings);
 
-        ip_card.setOnClickListener(v -> {
-            if (info_card.getVisibility() == View.GONE) {
-                info_card.setVisibility(View.VISIBLE);
-                open_image.setRotation(180);
-            } else {
-                info_card.setVisibility(View.GONE);
-                open_image.setRotation(0);
-            }
-        });
+        View.OnClickListener toggleDetails = v -> toggleMenuHeaderDetails();
+        if (menu_header_more_row != null) {
+            menu_header_more_row.setOnClickListener(toggleDetails);
+        }
+        if (menu_header_details != null) {
+            menu_header_details.setVisibility(View.GONE);
+            mMenuHeaderDetailsExpanded = false;
+        }
+        if (info_card != null) {
+            info_card.setVisibility(View.VISIBLE);
+        }
         if (menu_package_header != null) {
             menu_package_header.setOnClickListener(v -> toggleMenuPackageExpand());
         }
@@ -1456,22 +1551,46 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
         initDataMsgInfo();
         setEgInstallStatus();
         // ZeroTermux add {@
-        View aiOverlay = findViewById(R.id.ai_agent_panel_overlay);
-        View aiPanelRoot = findViewById(R.id.ai_agent_panel_root);
-        if (aiOverlay != null && aiPanelRoot != null) {
-            mAiAgentPanelHelper = new ZtAiAgentPanelHelper(aiOverlay, aiPanelRoot, () -> {
-                if (!getDrawer().isOpened()) {
-                    getDrawer().smoothRightOpen();
-                }
-            });
+        View aiPanelHost = findViewById(R.id.ai_agent_panel_host);
+        View aiRunningBanner = findViewById(R.id.ai_agent_running_banner);
+        if (aiPanelHost != null) {
+            mAiAgentPanelHelper = new ZtAiAgentPanelHelper(
+                aiPanelHost,
+                this,
+                () -> getDrawer().smoothClose(),
+                this::prepareAiAgentTabInDrawer,
+                // 侧栏打开时用面板内打断；关闭（含正在关闭）时用主界面顶栏
+                this::isAiDrawerEffectivelyOpen,
+                aiRunningBanner
+            );
         }
         // @}
     }
 
     // ZeroTermux add {@
+    /** 切到右侧栏 AI 智能体内容区并打开抽屉（不重复改 helper 可见状态）。 */
+    private void prepareAiAgentTabInDrawer() {
+        frame_file.setVisibility(View.INVISIBLE);
+        session_rl.setVisibility(View.INVISIBLE);
+        if (!getDrawer().isOpened()) {
+            getDrawer().smoothRightOpen();
+        }
+    }
+
+    private void showAiAgentTabContent() {
+        prepareAiAgentTabInDrawer();
+        if (mAiAgentPanelHelper != null) {
+            mAiAgentPanelHelper.setPanelTabVisible(true);
+        }
+    }
+
     private void showAiAgentPanel(String selectedText) {
         if (mAiAgentPanelHelper != null) {
             mAiAgentPanelHelper.show(selectedText);
+            return;
+        }
+        if (!getDrawer().isOpened()) {
+            getDrawer().smoothRightOpen();
         }
     }
 
@@ -1480,13 +1599,11 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
             getDrawer().smoothClose();
             return;
         }
-        if (UserSetManage.Companion.get().getZTUserBean().isAiAgentPanelEnabled()) {
-            if (mAiAgentPanelHelper != null) {
-                mAiAgentPanelHelper.toggle(null);
-            }
-            return;
+        if (mAiAgentPanelHelper != null) {
+            mAiAgentPanelHelper.show(null);
+        } else {
+            getDrawer().smoothRightOpen();
         }
-        getDrawer().smoothRightOpen();
     }
 
     /** Volume-/drawer shortcuts when「还原音量+-键」is off (isResetVolume=false). */
@@ -1504,6 +1621,29 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
         }
     }
     // @}
+
+    private void toggleMenuHeaderDetails() {
+        if (menu_header_details == null) {
+            return;
+        }
+        mMenuHeaderDetailsExpanded = !mMenuHeaderDetailsExpanded;
+        menu_header_details.setVisibility(mMenuHeaderDetailsExpanded ? View.VISIBLE : View.GONE);
+        if (open_image != null) {
+            open_image.setRotation(mMenuHeaderDetailsExpanded ? 180 : 0);
+        }
+    }
+
+    /** 确保详情区展开（例如 AI 切换菜单包时需要看到列表）。 */
+    private void ensureMenuHeaderDetailsExpanded() {
+        if (menu_header_details == null || mMenuHeaderDetailsExpanded) {
+            return;
+        }
+        mMenuHeaderDetailsExpanded = true;
+        menu_header_details.setVisibility(View.VISIBLE);
+        if (open_image != null) {
+            open_image.setRotation(180);
+        }
+    }
 
     private void showKeyBord() {
         InputMethodManager imm = (InputMethodManager) getSystemService(Context.INPUT_METHOD_SERVICE);
@@ -1534,7 +1674,7 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
     }
 
     private void setEgInstallStatus() {
-        version.setText(UUtils.getString(R.string.版本) + " : " + UUtils2.INSTANCE.getVersionName(UUtils.getContext()));
+        version.setText(UUtils2.INSTANCE.getVersionName(UUtils.getContext()));
         String versionName = ZeroCoreManage.getVersionName();
         if (!TextUtils.isEmpty(versionName)) {
             eg_tv.setText(UUtils.getString(R.string.engine_vision) + " : " + versionName);
@@ -1981,12 +2121,35 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
             });
     }
 
+    /** 左侧栏 IP：列出全部本机 IPv4，不折叠、不全截断。 */
+    private void refreshHostIpDisplay() {
+        if (ip_status == null) {
+            return;
+        }
+        java.util.ArrayList<String> ips =
+            com.termux.zerocore.ftp.new_ftp.utils.NetworkEnvironmentUtil.getLocalIpv4Addresses();
+        if (ips == null || ips.isEmpty()) {
+            String fallback = UUtils.getHostIP();
+            ip_status.setText(TextUtils.isEmpty(fallback)
+                ? UUtils.getString(R.string.未连接)
+                : fallback);
+            return;
+        }
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < ips.size(); i++) {
+            if (i > 0) {
+                sb.append('\n');
+            }
+            sb.append(ips.get(i));
+        }
+        ip_status.setText(sb.toString());
+    }
+
     /**
      * 连接服务器获取版本
      */
-
     private void getServiceVs() {
-        ip_status.setText(UUtils.getHostIP());
+        refreshHostIpDisplay();
         new BaseHttpUtils().getUrl(HTTPIP.IP + "/repository/main.json", new HttpResponseListenerBase() {
             @Override
             public void onSuccessful(@NotNull Message msg, int mWhat) {
@@ -2161,6 +2324,9 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
     }
 
     private void indexSwitch(int index) {
+        if (mAiAgentPanelHelper != null) {
+            mAiAgentPanelHelper.setPanelTabVisible(false);
+        }
         frame_file.setVisibility(View.INVISIBLE);
         session_rl.setVisibility(View.INVISIBLE);
         switch (index) {
@@ -2180,19 +2346,27 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
         LogUtils.e(TAG, "fragmentManager fragmentTransaction is: " + fragmentTransaction);
 
         // 1. 先移除可能存在的所有 Fragment
-        Fragment deepSeekFragment = getSupportFragmentManager()
-            .findFragmentByTag("DeepSeekTransitFragment");
         Fragment fileListFragment = getSupportFragmentManager()
             .findFragmentByTag("ZFileListFragment");
-
-        if (deepSeekFragment != null) {
-            fragmentTransaction.remove(deepSeekFragment);
-            LogUtils.e(TAG, "Removed existing DeepSeekTransitFragment");
-        }
+        Fragment deepSeekFragment = getSupportFragmentManager()
+            .findFragmentByTag("DeepSeekTransitFragment");
+        Fragment deepSeekMainFragment = getSupportFragmentManager()
+            .findFragmentByTag("DeepSeekMainFragment");
+        Fragment llmFragment = getSupportFragmentManager()
+            .findFragmentByTag("LLMMainFragment");
 
         if (fileListFragment != null) {
             fragmentTransaction.remove(fileListFragment);
             LogUtils.e(TAG, "Removed existing ZFileListFragment");
+        }
+        if (deepSeekFragment != null) {
+            fragmentTransaction.remove(deepSeekFragment);
+        }
+        if (deepSeekMainFragment != null) {
+            fragmentTransaction.remove(deepSeekMainFragment);
+        }
+        if (llmFragment != null) {
+            fragmentTransaction.remove(llmFragment);
         }
 
         // 2. 立即提交移除操作，确保状态被清理
@@ -2205,27 +2379,11 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
             getSupportFragmentManager().executePendingTransactions();
         }
 
-        switch (index) {
-            case 0:
-                LogUtils.e(TAG, "fragmentManager switch ZFileListFragment. ");
-                fragmentTransaction.replace(R.id.frame_file, ZFileListFragment.newInstance(), "ZFileListFragment")
-                    .commitAllowingStateLoss();
-                LogUtils.e(TAG, "fragmentManager switch ZFileListFragment deno. ");
-                break;
-            case 1:
-                LogUtils.e(TAG, "fragmentManager switch DeepSeekTransitFragment. ");
-                boolean isCustomAi = UserSetManage.Companion.get().getZTUserBean().isCustomAi();
-                if (isCustomAi) {
-                    LLMTransitFragment llmTransitFragment = LLMTransitFragment.newInstance();
-                    fragmentTransaction.replace(R.id.frame_file, llmTransitFragment, "LLMMainFragment")
-                        .commitAllowingStateLoss();
-                } else {
-                    DeepSeekTransitFragment deepSeekTransitFragment = DeepSeekTransitFragment.newInstance();
-                    fragmentTransaction.replace(R.id.frame_file, deepSeekTransitFragment, "DeepSeekMainFragment")
-                        .commitAllowingStateLoss();
-                }
-                LogUtils.e(TAG, "fragmentManager switch DeepSeekTransitFragment deno. ");
-                break;
+        if (index == 0) {
+            LogUtils.e(TAG, "fragmentManager switch ZFileListFragment. ");
+            fragmentTransaction.replace(R.id.frame_file, ZFileListFragment.newInstance(), "ZFileListFragment")
+                .commitAllowingStateLoss();
+            LogUtils.e(TAG, "fragmentManager switch ZFileListFragment deno. ");
         }
         ZTConfig.INSTANCE.setCloseListener(() -> getDrawer().smoothClose());
     }
@@ -2458,6 +2616,7 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
             refreshMainMenu();
             refreshMenuPackageList();
             if (!mMenuPackageExpanded && mMenuPackageList != null) {
+                ensureMenuHeaderDetailsExpanded();
                 mMenuPackageExpanded = true;
                 mMenuPackageList.setVisibility(View.VISIBLE);
                 if (open_image_menu != null) {
@@ -2521,6 +2680,7 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
         if (mMenuPackageList == null) {
             return;
         }
+        ensureMenuHeaderDetailsExpanded();
         mMenuPackageExpanded = !mMenuPackageExpanded;
         mMenuPackageList.setVisibility(mMenuPackageExpanded ? View.VISIBLE : View.GONE);
         if (open_image_menu != null) {
@@ -2742,9 +2902,23 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
         SmartSwipeWrapper rightHorizontalMenuWrapper = SmartSwipe.wrap(mIncludeRightMenu).addConsumer(new DrawerConsumer()).enableVertical().getWrapper();
         SimpleSwipeListener listener = new SimpleSwipeListener() {
             @Override
+            public void onSwipeProcess(SmartSwipeWrapper wrapper, SwipeConsumer consumer, int direction, boolean settling, float progress) {
+                super.onSwipeProcess(wrapper, consumer, direction, settling, progress);
+                updateDrawerOpenProgress(progress);
+            }
+
+            @Override
             public void onSwipeOpened(SmartSwipeWrapper wrapper, SwipeConsumer consumer, int direction) {
                 super.onSwipeOpened(wrapper, consumer, direction);
+                updateDrawerOpenProgress(1f, true);
                 mTerminalView.clearFocus();
+                refreshHostIpDisplay();
+                try {
+                    if (zt_new != null) {
+                        ZTGitHubVersion.create().initZtVersionVisible(zt_new);
+                    }
+                } catch (Exception ignored) {
+                }
                 if (!UserSetManage.Companion.get().getZTUserBean().isHideGuideLayout()) {
                     mGuideLayout.setVisibility(View.GONE);
                     ZTUserBean ztUserBean = UserSetManage.Companion.get().getZTUserBean();
@@ -2756,7 +2930,9 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
             @Override
             public void onSwipeClosed(SmartSwipeWrapper wrapper, SwipeConsumer consumer, int direction) {
                 super.onSwipeClosed(wrapper, consumer, direction);
-                mTerminalView.requestFocus();
+                // forceNotify：确保关闭后一定刷新主界面顶部打断条。
+                updateDrawerOpenProgress(0f, true);
+                // 与原版 termux-app 一致：关闭侧栏不 requestFocus，避免焦点变化自动弹出软键盘。
             }
         };
 

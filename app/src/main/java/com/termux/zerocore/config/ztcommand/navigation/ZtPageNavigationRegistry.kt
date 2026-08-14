@@ -14,6 +14,7 @@ import com.termux.zerocore.activity.SwitchActivity
 import com.termux.zerocore.activity.WebViewActivity
 import com.termux.zerocore.ai.activity.MainAiSettings
 import com.termux.zerocore.ai.agent.ZtAgentAiSettingsActivity
+import com.termux.zerocore.ai.agent.ZtAgentAiSkillsActivity
 import com.termux.zerocore.ai.deepseek.activity.ZeroTermuxDeepSeekKeyActivity
 import com.termux.zerocore.ai.deepseek.activity.ZeroTermuxDeepSeekSettingsActivity
 import com.termux.zerocore.config.ztcommand.activity.SocketBaseActivity
@@ -23,12 +24,14 @@ import com.termux.zerocore.llm.activity.ZeroTermuxLLMSettingsActivity
 import com.termux.zerocore.scrcpy.MainActivity
 import com.termux.zerocore.settings.ContainerSettingsMainActivity
 import com.termux.zerocore.settings.LeftMenuSettingsActivity
+import com.termux.zerocore.settings.MenuSettingsActivity
 import com.termux.zerocore.settings.MenuUpdateSourceActivity
 import com.termux.zerocore.settings.TimerActivity
 import com.termux.zerocore.settings.ZTAboutActivity
 import com.termux.zerocore.settings.ZTInstallActivity
 import com.termux.zerocore.settings.ZTOnlineServerActivity
 import com.termux.zerocore.settings.ZeroTermuxSettingsActivity
+import com.termux.zerocore.settings.ZtDeveloperOptionsActivity
 import com.termux.zerocore.settings.ZtSettingsActivity
 import com.termux.zerocore.utermux_windows.qemu.activity.RunWindowActivity
 import com.termux.zerocore.workstation.ZtWorkstationSettingsActivity
@@ -74,6 +77,10 @@ object ZtPageNavigationRegistry {
         "agent ai" to "agent_ai_settings",
         "智能体" to "agent_ai_settings",
         "智能体设置" to "agent_ai_settings",
+        "skills" to "agent_skills",
+        "agent_skills" to "agent_skills",
+        "技能包" to "agent_skills",
+        "技能" to "agent_skills",
         "ai_settings" to "ai_settings",
         "deepseek" to "deepseek_settings",
         "llm" to "llm_settings",
@@ -102,7 +109,11 @@ object ZtPageNavigationRegistry {
         "container" to "container_settings",
         "容器" to "container_settings",
         "left_menu" to "left_menu_settings",
-        "左侧菜单" to "left_menu_settings"
+        "左侧菜单" to "left_menu_settings",
+        "menu_settings" to "menu_settings",
+        "菜单设置" to "menu_settings",
+        "developer_options" to "zt_developer_options",
+        "开发者选项" to "zt_developer_options"
     )
 
     /** 从设置/智能体打开向导时需带 jump_other，否则 isJumpGuide=true 会立刻跳回主界面 */
@@ -115,10 +126,13 @@ object ZtPageNavigationRegistry {
         PageEntry("termux", R.string.zt_nav_page_termux, TermuxActivity::class.java),
         PageEntry("zt_settings", R.string.zt_nav_page_zt_settings, ZtSettingsActivity::class.java),
         PageEntry("zero_termux_settings", R.string.zt_nav_page_zero_termux_settings, ZeroTermuxSettingsActivity::class.java),
+        PageEntry("menu_settings", R.string.zt_nav_page_menu_settings, MenuSettingsActivity::class.java),
         PageEntry("left_menu_settings", R.string.zt_nav_page_left_menu_settings, LeftMenuSettingsActivity::class.java),
         PageEntry("menu_update_source", R.string.zt_nav_page_menu_update_source, MenuUpdateSourceActivity::class.java),
+        PageEntry("zt_developer_options", R.string.zt_nav_page_zt_developer_options, ZtDeveloperOptionsActivity::class.java),
         PageEntry("ai_settings", R.string.zt_nav_page_ai_settings, MainAiSettings::class.java),
         PageEntry("agent_ai_settings", R.string.zt_nav_page_agent_ai_settings, ZtAgentAiSettingsActivity::class.java),
+        PageEntry("agent_skills", R.string.zt_nav_page_agent_skills, ZtAgentAiSkillsActivity::class.java),
         PageEntry("deepseek_settings", R.string.zt_nav_page_deepseek_settings, ZeroTermuxDeepSeekSettingsActivity::class.java),
         PageEntry("deepseek_key", R.string.zt_nav_page_deepseek_key, ZeroTermuxDeepSeekKeyActivity::class.java),
         PageEntry("llm_settings", R.string.zt_nav_page_llm_settings, ZeroTermuxLLMSettingsActivity::class.java),
@@ -168,8 +182,11 @@ object ZtPageNavigationRegistry {
     private val keywordRules: List<Pair<List<String>, String>> = listOf(
         listOf("开机向导", "开机引导", "引导页", "boot guide", "boot wizard", "boot_guide", "wizard") to "guide",
         listOf("工作站", "workstation") to "workstation_settings",
+        listOf("技能包", "skills", "agent skills", "agent_skills") to "agent_skills",
         listOf("智能体", "agent ai", "agent_ai") to "agent_ai_settings",
         listOf("功能设置", "zero termux settings") to "zero_termux_settings",
+        listOf("菜单设置", "menu settings") to "menu_settings",
+        listOf("开发者选项", "developer options") to "zt_developer_options",
         listOf("deepseek") to "deepseek_settings",
         listOf("llm", "自定义 llm") to "llm_settings",
         listOf("关于", "about") to "zt_about",
